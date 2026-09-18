@@ -44,14 +44,20 @@ export function parseCeoResponse(text) {
 
 export async function runCeoReasoning({ signals, ceoState, openInitiatives, businessName, spawnImpl = nodeSpawn, model = 'sonnet' }) {
   const { system, user } = buildCeoPrompt({ signals, ceoState, openInitiatives, businessName });
-  const args = ['-p', user, '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--system-prompt', system,
+  // The user prompt embeds the full real signals JSON (all 10 gateway views + office task
+  // state) and can genuinely exceed Windows' ~32K command-line length limit (verified live:
+  // a real cycle against real production data hit ENAMETOOLONG with `user` as a CLI arg).
+  // `-p` given with no positional value reads the prompt from stdin instead — verified
+  // directly (`echo ... | claude -p` answers correctly) — which has no such size limit.
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--system-prompt', system,
     '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,Agent,NotebookEdit,Task,WebFetch,WebSearch', '--no-chrome', '--model', model];
   // Same fix serve.mjs's askX already needs: the CLI refuses to nest inside another
   // Claude Code session, and CLAUDECODE is set whenever this runs from inside one
   // (e.g. manual testing) even though Task Scheduler's real runs never set it.
   const env = { ...process.env }; delete env.CLAUDECODE;
   return new Promise((resolve, reject) => {
-    const p = spawnImpl('claude', args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+    const p = spawnImpl('claude', args, { stdio: ['pipe', 'pipe', 'pipe'], env });
+    p.stdin.write(user); p.stdin.end();
     let out = '', text = '', gotResult = false, modelUsed = model;
     const timer = setTimeout(() => { p.kill && p.kill('SIGKILL'); reject(new Error('CEO reasoning took too long')); }, 180000);
     const feed = line => {

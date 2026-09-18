@@ -13,6 +13,7 @@ function tmpBrainDir() { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ceo-cy
 function fakeReasoningSpawn(resultObj) {
   return () => {
     const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+    p.stdin = { write() {}, end() {} }; // reason.mjs writes the prompt to stdin, not argv (Windows argv-length limit)
     setImmediate(() => { p.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', result: JSON.stringify(resultObj), modelUsage: { 'claude-sonnet': {} } }) + '\n')); p.emit('close', 0); });
     return p;
   };
