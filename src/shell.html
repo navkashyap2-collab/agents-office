@@ -186,6 +186,12 @@
   #resetStatus.rs-ok .dot { background: #2E8B57; }
   #resetStatus.rs-stale .dot { background: #E0A020; }
   #resetStatus.rs-unavailable .dot, #resetStatus.rs-loading .dot { background: #C0392B; }
+  /* RESET AI CEO: same honest connection-state colours, plus an unread-briefing dot */
+  #ceoStatus { margin-right: 4px; cursor: pointer; }
+  #ceoStatus.ceo-ok .dot { background: #2E8B57; }
+  #ceoStatus.ceo-stale .dot { background: #E0A020; }
+  #ceoStatus.ceo-unavailable .dot, #ceoStatus.ceo-loading .dot { background: #8a8a8a; }
+  #ceoStatus.ceo-unread .dot { box-shadow: 0 0 0 3px color-mix(in srgb, #E0A020 45%, transparent); }
   @keyframes tcin { to { opacity: 1; transform: none; } }
   @keyframes tpulse {
     45% { transform: scale(1.38); filter: drop-shadow(0 0 9px rgba(46,139,87,.7)); }
@@ -522,6 +528,35 @@
     transition: opacity .45s var(--ease);
   }
   #boardDim.on { opacity: 1; pointer-events: auto; }
+  /* RESET AI CEO: same fixed-panel + dim-overlay convention as #board/#boardDim */
+  #ceoPanel {
+    position: fixed; top: 68px; bottom: 18px; right: 18px; z-index: 22; width: min(34vw, 480px);
+    background: color-mix(in srgb, var(--cream) 96%, transparent);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--hairline); border-radius: 18px;
+    box-shadow: 0 24px 70px rgba(21,20,20,.18);
+    padding: 16px 18px; overflow-y: auto;
+    opacity: 0; transform: translateY(10px) scale(.985); pointer-events: none;
+    transition: opacity .45s var(--ease), transform .45s var(--ease);
+    font-family: var(--ui); font-size: 12px; color: var(--ink);
+  }
+  #ceoPanel.on { opacity: 1; transform: none; pointer-events: auto; }
+  #ceoPanel h3 { font-size: 9.5px; letter-spacing: .14em; color: var(--grey); margin: 14px 0 6px; }
+  #ceoPanel h3:first-child { margin-top: 0; }
+  #ceoPanel ul { margin: 0; padding: 0; list-style: none; }
+  #ceoPanel li { padding: 4px 0; border-bottom: 1px solid var(--hairline); line-height: 1.4; }
+  #ceoPanel .ceo-evidence { color: var(--grey); }
+  #ceoPanel .ceo-empty { color: var(--grey); }
+  #ceoPanel .ceo-stale { color: #E0A020; font-size: 10.5px; margin-bottom: 10px; }
+  #ceoPanel .ceo-meta { margin-top: 14px; font-size: 9.5px; letter-spacing: .08em; color: var(--grey); }
+  #ceoPanel .ceo-action-needed { color: #C0392B; }
+  #ceoPanel .ceo-attention { color: #E0A020; }
+  #ceoPanelDim {
+    position: fixed; inset: 0; z-index: 21; pointer-events: none; opacity: 0;
+    background: color-mix(in srgb, var(--cream) 62%, transparent);
+    transition: opacity .45s var(--ease);
+  }
+  #ceoPanelDim.on { opacity: 1; pointer-events: auto; }
   .bd-head { display: flex; justify-content: space-between; align-items: baseline;
     border-bottom: 1px solid var(--ink); padding-bottom: 9px; flex: none; }
   .bd-head .b-name { font-size: 11px; letter-spacing: .16em; display: flex; align-items: baseline; gap: 9px; }
@@ -1060,6 +1095,8 @@
        /api/snapshot (see src/reset-status.js) — distinct states, never "healthy" just
        because the element exists. -->
   <span id="resetStatus" class="tc-lab" title="Reset Command Centre bridge status"><span class="dot"></span><span class="rs-text">RESET —</span></span>
+  <!-- RESET AI CEO: the daily/periodic briefing panel's top-bar indicator (see src/ceo-panel.js) -->
+  <span id="ceoStatus" class="tc-lab" title="RESET AI CEO briefing (R)"><span class="dot"></span><span class="rs-text">CEO —</span></span>
   <span class="sp"></span>
   <div id="topmodels"></div>
   <button id="topCal" title="the calendar — tasks and routines on their days (P)">◷ CALENDAR</button>

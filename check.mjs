@@ -463,6 +463,23 @@ else {
       if (await page.evaluate(() => window.CC.brain.isOpen())) throw new Error('graph did not close');
       return n + ' notes';
     });
+    await step('smoke: CEO panel opens and shows an honest empty state before any cycle has run', async () => {
+      await page.keyboard.press('r');
+      // The panel opens via the same double-requestAnimationFrame pattern as #board (tasks.js) — a
+      // fixed 700ms wait was empirically flaky at this point in the run (headless WebGL frames can
+      // be slow after several prior panel animations), so poll instead, matching the "approval flow
+      // reaches the panel" step's own comment on the same class of timing issue.
+      await page.waitForFunction(() => document.getElementById('ceoPanel')?.classList.contains('on'), null, { timeout: 4000 }).catch(() => {});
+      const opened = await page.evaluate(() => document.getElementById('ceoPanel').classList.contains('on')); if (!opened) throw new Error('CEO panel did not open');
+      const shown = await page.evaluate(() => document.querySelector('.ceo-panel')?.textContent || '');
+      // This is a file:// page (see the goto above) — ceo-panel.js's refreshCeo() never runs at all
+      // (its own protocol guard, matching reset-status.js's identical convention, only fires over
+      // http), so CEO.state stays 'Loading…' forever here. That is itself the correct, honest,
+      // non-fabricated behaviour for this environment — accept it alongside the served-app states.
+      if (!/No CEO cycle has run yet|Priorities|Loading/.test(shown)) throw new Error('CEO panel did not render an honest state: ' + shown.slice(0, 200));
+      await page.keyboard.press('Escape'); await page.waitForTimeout(500);
+      const closed = await page.evaluate(() => document.getElementById('ceoPanel').classList.contains('on')); if (closed) throw new Error('CEO panel did not close');
+    });
     await step('smoke: approval flow reaches the panel', async () => {
       await page.evaluate(() => window.CC.requestApproval('ada'));
       await page.waitForFunction(() => document.querySelectorAll('.tp-row.waiting').length > 0, null, { timeout: 4000 }).catch(() => {}); // the panel renders on the next frame; headless WebGL frames can be slow

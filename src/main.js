@@ -11,6 +11,7 @@ import {
 } from './builders.js';
 import { initMcp } from './mcp.js';
 import { RESET, metric as resetMetric } from './reset-status.js'; // RESET INTEGRATION: real Reset Commercial Cleaning data
+import { CEO, toggleCeoPanel, isCeoPanelOpen, closeCeoPanel, hasUnreadCeoBriefing } from './ceo-panel.js'; // RESET AI CEO: the briefing panel (R)
 import { loadConnectors } from './connectors.js';
 import { initTasks } from './tasks.js';
 import { initBrain } from './brain.js';
@@ -510,11 +511,12 @@ addEventListener('pointerup', (e) => {
 });
 addEventListener('keydown', (e) => {
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return; // typing in the bar, the big editor or a menu never fires a hotkey
-  if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
+  if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (isCeoPanelOpen()) closeCeoPanel(); else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
   else if (e.key === 'p' || e.key === 'P') { if (tasks && tasks.calendar) tasks.calendar.toggle(); } // V3.2.1 (16 Sep 2026): the calendar
   else if (tasks && tasks.calendar && tasks.calendar.isOpen()) return; // the calendar has its own keys (← → W M T)
   else if (e.key === 'g' || e.key === 'G') brain.toggle(); // V3.6: the full-screen Brain graph
   else if (e.key === 'b' || e.key === 'B') { if (tasks) tasks.toggle(); } // V3: the company-wide board
+  else if (e.key === 'r' || e.key === 'R') toggleCeoPanel(); // RESET AI CEO: the daily/periodic briefing panel
   else if (e.key === '+' || e.key === '=') zoomStep(1.5);
   else if (e.key === '-' || e.key === '_') zoomStep(1 / 1.5);
   else if (e.key === '0') zoomOut();
@@ -1018,6 +1020,7 @@ function zoomToApproval(dept) {
   else enterFocus(dept, s.a.id);
 }
 document.getElementById('topCal').addEventListener('click', () => { if (tasks && tasks.calendar) tasks.calendar.toggle(); }); // V3.2.1: the top-bar calendar button (same as P)
+document.getElementById('ceoStatus').addEventListener('click', toggleCeoPanel); // RESET AI CEO: the top-bar badge doubles as a button (same as R)
 document.getElementById('topAppr').addEventListener('click', () => {
   const s = Object.values(R).find(r => r.state === 'stuck');
   if (s) zoomToApproval(s.a.dept);
@@ -1368,6 +1371,19 @@ function tickResetStatus() {
   updateBillboards();
 }
 setInterval(tickResetStatus, 2000); tickResetStatus();
+
+// RESET AI CEO: mirrors tickResetStatus's honest-state convention — CONNECTED/DEGRADED/
+// BLOCKED map from CEO.state exactly like RESET.state, plus a dot when an unread priority
+// or risk exists from a cycle the panel hasn't been opened since.
+function tickCeoStatus() {
+  const el = document.getElementById('ceoStatus');
+  if (!el) return;
+  const label = { ok: 'CONNECTED', stale: 'DEGRADED', unavailable: 'NO CYCLE YET', loading: 'CONNECTING' }[CEO.state] || 'NO CYCLE YET';
+  el.className = 'tc-lab ceo-' + CEO.state + (hasUnreadCeoBriefing() ? ' ceo-unread' : '');
+  el.querySelector('.rs-text').textContent = 'CEO ' + label;
+  el.title = 'RESET AI CEO briefing (R)' + (CEO.state === 'stale' ? ` — showing the last real briefing. Reason: ${CEO.reason}` : CEO.state === 'unavailable' ? ` — ${CEO.reason}` : '');
+}
+setInterval(tickCeoStatus, 2000); tickCeoStatus();
 
 function tickClock() {
   const d = new Date();
