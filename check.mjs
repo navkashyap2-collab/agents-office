@@ -493,6 +493,12 @@ else {
       return `${m.servers.length} servers · ${c} connected · agents get tools: ${m.tools ? 'yes' : 'no (API backend)'}${m.web ? ' + web' : ''}`;
     });
     await step('server: /api/health carries the roster', async () => { if (!Array.isArray(up.agents) || up.agents.length !== 35) throw new Error('agents: ' + (up.agents && up.agents.length)); if (!up.agents[0].does) throw new Error('no job description'); });
+    await step('server: /api/ceo is an honest read (available:false when no cycle has run)', async () => {
+      const r = await (await fetch(base + '/api/ceo')).json();
+      if (typeof r.available !== 'boolean') throw new Error('missing available flag');
+      if (r.available === false && r.state !== null) throw new Error('unavailable must report state:null, not a guessed default');
+      return `available: ${r.available}`;
+    });
     await step('server: the office default is Sonnet and /api/usage always answers', async () => {
       if (up.model !== 'sonnet' || JSON.stringify(up.models) !== '["sonnet","opus","fable"]') throw new Error('health model: ' + up.model);
       if (up.effort !== '' || JSON.stringify(up.efforts) !== '["low","medium","high","xhigh","max"]') throw new Error('health effort: ' + up.effort);

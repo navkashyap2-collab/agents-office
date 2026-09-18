@@ -487,6 +487,10 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/brain') return json(res, 200, graph);
     if (url.pathname === '/api/usage') return json(res, 200, await getUsage(url.searchParams.get('refresh') === '1')); // V3.6: the plan's gauge (never a 500: unavailable is an answer)
     if (url.pathname === '/api/reset-status') return json(res, 200, await fetchResetStatus()); // RESET INTEGRATION: read-only, real Reset data — never a 500, unavailable is an honest answer
+    if (url.pathname === '/api/ceo') { // RESET AI CEO: read-only, written by ceo/cycle.mjs — never a 500, missing state is an honest answer
+      try { return json(res, 200, { available: true, state: JSON.parse(fs.readFileSync(path.join(DATA, 'ceo', 'ceo-state.json'), 'utf8')) }); }
+      catch { return json(res, 200, { available: false, state: null }); }
+    }
     if (url.pathname === '/api/tasks' && req.method === 'GET') return json(res, 200, load());
     if (url.pathname === '/api/routines' && req.method === 'GET') return json(res, 200, routinesOut());
     if (url.pathname === '/api/routines' && req.method === 'POST') {
