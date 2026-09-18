@@ -13,7 +13,7 @@ export const MODELS = {
 };
 export const MODEL_KEYS = ['sonnet', 'opus', 'fable'];
 export const DEFAULT_MODEL = 'sonnet';
-export const FROM_TEXT = { task: 'this task', routine: 'this routine', agent: 'this agent', office: 'office default', model: 'the model\'s own' };
+export const FROM_TEXT = { task: 'this task', routine: 'this routine', router: 'the router (complexity-based)', agent: 'this agent', office: 'office default', model: 'the model\'s own' };
 export const EFFORT_KEYS = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const EFFORT_NAME = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-high', max: 'Max' };
 
@@ -28,9 +28,10 @@ export function normEffort(s) {
 export const effortName = k => EFFORT_NAME[k] || 'Auto';
 
 /** The effort that wins, and where it was set; falls through to the model's own default (may be null = the CLI decides). */
-export function effortFor({ task, routine, agent, office, model } = {}) {
+export function effortFor({ task, routine, router, agent, office, model } = {}) {
   if (normEffort(task)) return { effort: normEffort(task), from: 'task' };
   if (normEffort(routine)) return { effort: normEffort(routine), from: 'routine' };
+  if (normEffort(router)) return { effort: normEffort(router), from: 'router' };
   if (normEffort(agent)) return { effort: normEffort(agent), from: 'agent' };
   if (normEffort(office)) return { effort: normEffort(office), from: 'office' };
   const m = MODELS[normModel(model)] || MODELS[DEFAULT_MODEL];
@@ -47,10 +48,13 @@ export function normModel(s) {
 export const modelName = k => (MODELS[k] || MODELS[DEFAULT_MODEL]).name;
 export const modelId = k => (MODELS[k] || MODELS[DEFAULT_MODEL]).id;
 
-/** The one that wins, and where it was set. Each argument is a model key or empty. */
-export function modelFor({ task, routine, agent, office } = {}) {
+/** The one that wins, and where it was set. Each argument is a model key or empty.
+ * Precedence: an explicit task/routine override beats the router's own complexity-based
+ * pick, which beats the agent's static default, which beats the office default. */
+export function modelFor({ task, routine, router, agent, office } = {}) {
   if (normModel(task)) return { model: normModel(task), from: 'task' };
   if (normModel(routine)) return { model: normModel(routine), from: 'routine' };
+  if (normModel(router)) return { model: normModel(router), from: 'router' };
   if (normModel(agent)) return { model: normModel(agent), from: 'agent' };
   return { model: normModel(office) || DEFAULT_MODEL, from: 'office' };
 }

@@ -10,6 +10,7 @@ import {
   makePerson, posePerson, poseWork, makePlant, makeServerRack, makeMeetingTable, makeWalkway, makeWarnSprite,
 } from './builders.js';
 import { initMcp } from './mcp.js';
+import { RESET, metric as resetMetric } from './reset-status.js'; // RESET INTEGRATION: real Reset Commercial Cleaning data
 import { loadConnectors } from './connectors.js';
 import { initTasks } from './tasks.js';
 import { initBrain } from './brain.js';
@@ -247,7 +248,12 @@ for (const a of AGENTS) {
   R[a.id] = {
     a, person, warn, pill, seat: person.position.clone(), seatRot: ANG + Math.PI,
     stand: person.position.clone().add(rot(new THREE.Vector3(1.5, 0, 0.15))),
-    state: 'working', bob: Math.random() * 10, path: null, pathI: 0, speed: 9.5, ask: null,
+    // RESET INTEGRATION: a live, served office starts idle — a desk only becomes
+    // 'working' when tasks.js attaches a genuine live task to this agent (see
+    // apply()/toDoing() in tasks.js). The offline/file demo (no server, no CORS-safe
+    // origin to even ask) keeps its original always-busy look untouched.
+    state: location.protocol.startsWith('http') ? 'idle' : 'working',
+    bob: Math.random() * 10, path: null, pathI: 0, speed: 9.5, ask: null,
     v1: V1.find(x => x.id === a.id), feed: [],
     station, desk, screenSet, // hero mode reaches the monitor and the desk through these
   };
@@ -321,26 +327,30 @@ function tickDim(dt) {
 /* ---------- department billboards — v1's exact agreed metric rows + amber approval row ---------- */
 const kv = id => KPIS.find(k => k.id === id).val;
 let brainNotes = brain.state.notes;
+// RESET INTEGRATION: these were STATS.x/kv() demo values that drift on a Math.random()
+// walk — replaced with real Reset Commercial Cleaning data via reset-status.js, which
+// itself reads Reset Command Centre's real read-only /api/snapshot. A department with no
+// authoritative Reset source for a metric shows '—', never an invented number — see
+// buildResetStatus() in serve.mjs for exactly what each field is and where it comes from.
 const BB_ROWS = profileRows() || {
   emails: [
-    ['EMAILS SENT', () => STATS.emailsSent],
-    ['REPLIES DRAFTED', () => STATS.drafts]],
+    ['EMAILS SENT', () => resetMetric('emails', 'EMAILS_SENT')],
+    ['GMAIL SIGNALS', () => resetMetric('emails', 'GMAIL_SIGNALS')]],
   delivery: [
-    ['REPORTS SENT', () => STATS.reports],
-    ['ON TRACK', () => STATS.onTrack + ' / ' + STATS.projects]],
+    ['AGENT RUNS', () => resetMetric('delivery', 'AGENT_RUNS')],
+    ['ESCALATED', () => resetMetric('delivery', 'ESCALATED')]],
   sales: [
-    ['CALLS S·A·J', () => STATS.spencer + '·' + STATS.arwin + '·' + STATS.jack],
-    ['NEW MANAGERS', () => STATS.managers],
-    ['AUTO-ONBOARDED', () => STATS.autoOnb]],
+    ['CANDIDATES VETTED', () => resetMetric('sales', 'CANDIDATES_VETTED')],
+    ['QUALIFIED', () => resetMetric('sales', 'QUALIFIED')]],
   marketing: [
-    ['NEW INSIGHTS', () => STATS.insMkt],
-    ['COST PER USER', () => '$' + Math.round(STATS.cpa)]],
+    ['NEW INSIGHTS', () => '—'],
+    ['MARKETING DATA', () => 'NO DATA']],
   ops: [
-    ['PROPOSALS MADE', () => Math.round(kv('proposals'))],
-    ['NEW INSIGHTS', () => STATS.insOps]],
+    ['PROPOSALS MADE', () => resetMetric('ops', 'PROPOSALS_MADE')],
+    ['RECENT CALLS', () => resetMetric('ops', 'RECENT_CALLS')]],
   fin: [
-    ['INVOICES ISSUED', () => Math.round(kv('invoices'))],
-    ['BILLS PAID', () => STATS.billsPaid]],
+    ['INVOICES ISSUED', () => '—'],
+    ['REVENUE', () => 'NO DATA']],
   brain: [
     ['NOTES INDEXED', () => brainNotes.toLocaleString('en-NZ')]],
 };
@@ -1056,9 +1066,13 @@ function fireAgentEvent(seedTs) {
     if (modalOpen === r.a.id && modalTab === 'activity') renderActivity(r.a.id);
   }
 }
-// seed a believable history so Activity isn't empty at boot
-for (let i = 0; i < 170; i++) fireAgentEvent(Date.now() - ri(2, 200) * 60000);
-for (const r of Object.values(R)) r.feed.sort((a, b) => b.ts - a.ts);
+// seed a believable history so Activity isn't empty at boot — RESET INTEGRATION: only for
+// the true offline/file demo (mirrors tasks.js connect()'s own protocol check). A served,
+// live office never gets fabricated history — its Activity panel starts genuinely empty.
+if (!location.protocol.startsWith('http')) {
+  for (let i = 0; i < 170; i++) fireAgentEvent(Date.now() - ri(2, 200) * 60000);
+  for (const r of Object.values(R)) r.feed.sort((a, b) => b.ts - a.ts);
+}
 
 /* ---------- minimal sim: work bobs, screen updates, brain meetings ---------- */
 let meeting = null; // Brain meetings fire ONLY on the X hotkey (AJ's call — demo cue, not ambient)
@@ -1190,6 +1204,10 @@ function tickSim(now, dt) {
       }
       poseWork(r.person, mode, now + r.bob * 500, dt);
       applyStandAndFacing(r, mode, now, dt);
+    } else if (r.state === 'idle') {
+      // RESET INTEGRATION: no real task attached to this desk right now — a plain
+      // standing pose, no typing/emote animation implying work that isn't happening.
+      posePerson(r.person, 'stand', now);
     } else if (r.state === 'walking' || r.state === 'returning') {
       posePerson(r.person, 'walk', now);
       if (walkStep(r, dt)) {
@@ -1257,7 +1275,10 @@ function tickSim(now, dt) {
     nextApprovalAt = now + 50000 + Math.random() * 40000;
   }
   // agent events drive everything — feed, chat streams, billboard metrics (nothing is static)
-  if (now > nextMetricAt) {
+  // RESET INTEGRATION: this is the simulated-activity generator (fake feed text, fake
+  // STATS increments, fake brain-note count). It must never run once the office is live
+  // against a real backend — real activity comes from real tasks/agent_runs instead.
+  if (!(tasks && tasks.isLive()) && now > nextMetricAt) {
     fireAgentEvent();
     nextMetricAt = now + 2600 + Math.random() * 3800;
   }
@@ -1267,7 +1288,9 @@ function tickSim(now, dt) {
     for (const ss of screenSets) if (ss.live) ss.live.tick(now, slow);
   }
   // rotate desk screen content — a couple of screens refresh every beat so the room reads busy
-  else if (Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {
+  // RESET INTEGRATION: WORKLINES here are canned demo text, not real deliverable content —
+  // never draw them once the office is live.
+  else if (!(tasks && tasks.isLive()) && Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {
     const n = 1 + (Math.random() < 0.5 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const ss = screenSets[Math.floor(Math.random() * screenSets.length)];
@@ -1325,6 +1348,27 @@ function tickLOD() {
 }
 
 /* ---------- clock (REAL local time — locked rule) ---------- */
+// RESET INTEGRATION: reflect the real bridge state in the top bar — CONNECTED (ok, fresh
+// this cycle), DEGRADED (stale — last-known values, timestamped, Reset unreachable right
+// now), or BLOCKED (never reached Reset at all). Never shown as healthy just because the
+// element exists.
+function tickResetStatus() {
+  const el = document.getElementById('resetStatus');
+  if (!el) return;
+  const label = { ok: 'CONNECTED', stale: 'DEGRADED', unavailable: 'BLOCKED', loading: 'CONNECTING' }[RESET.state] || 'BLOCKED';
+  el.className = 'tc-lab rs-' + RESET.state;
+  const age = RESET.fetchedAtMs ? Math.round((Date.now() - RESET.fetchedAtMs) / 1000) : null;
+  el.querySelector('.rs-text').textContent = 'RESET ' + label + (RESET.state === 'stale' && age !== null ? ` (${age}s old)` : '');
+  el.title = RESET.state === 'ok' ? 'Reset Command Centre bridge — live'
+    : RESET.state === 'stale' ? `Reset Command Centre unreachable right now — showing last-known values from ${age}s ago. Reason: ${RESET.reason}`
+    : `Reset Command Centre unavailable — no data. Reason: ${RESET.reason}`;
+  // RESET INTEGRATION: updateBillboards() used to be driven entirely by the now-disabled
+  // fake fireAgentEvent() ticker — without this call the real numbers in RESET never
+  // reach the department cards even though the data itself is correctly fetched.
+  updateBillboards();
+}
+setInterval(tickResetStatus, 2000); tickResetStatus();
+
 function tickClock() {
   const d = new Date();
   document.getElementById('clock').textContent =

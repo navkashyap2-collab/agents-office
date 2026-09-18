@@ -44,8 +44,9 @@ export function planPrompt({ business, deptName, lead, seats, text, title, max, 
     (notes ? `Company notes you may use to split it well:\n${notes}\n\n` : '') +
     `The owner asked for a TEAM, so split the request into 2 to ${max} INDEPENDENT pieces that can be done at the same time, each owned by a different desk whose job or skills fit it — never one piece. ` +
     'When the request is one job in parts (three angles, three emails, three sections), give each part to a different desk with the whole brief so the parts stay distinct; when it is one indivisible thing, give the making to one desk and a different lens to another (a check against the brand voice, the customer\'s view, the numbers, the risks). ' +
-    'You may take one piece yourself. Do not invent work the owner did not ask for. Each piece\'s text is a complete instruction the teammate can act on alone, with what the owner said that matters to it.\n' +
-    'Return: {"pieces":[{"agent":"<id>","title":"<imperative title, max 70 characters>","text":"<the instruction>"}],"why":"<one short sentence on how you split it>"}';
+    'You may take one piece yourself. Do not invent work the owner did not ask for. Each piece\'s text is a complete instruction the teammate can act on alone, with what the owner said that matters to it. ' +
+    'For each piece also pick a complexity tier so it runs on the right model — "fast" for simple classification/extraction/formatting/status checks, "reasoning" for qualification/strategy/pricing/proposals/ambiguous judgment calls, "strongest" only for genuinely high-value, deep-reasoning work. Do not mark everything "strongest".\n' +
+    'Return: {"pieces":[{"agent":"<id>","title":"<imperative title, max 70 characters>","text":"<the instruction>","complexity":"fast|reasoning|strongest"}],"why":"<one short sentence on how you split it>"}';
   return { system, user };
 }
 
@@ -57,7 +58,8 @@ function parseJSON(text) {
 
 /** The lead's JSON → pieces on real seats. Unknown seats are dropped, a seat gets one piece
  *  (first wins), the count is capped at max. One valid piece → that desk does it (solo); none → the lead does it alone. */
-export function parsePlan(text, { seats, lead, max = DEFAULTS.max, fallback = {} }) {
+const COMPLEXITY_KEYS = ['fast', 'reasoning', 'strongest'];
+export function parsePlan(text, { seats, lead, max = DEFAULTS.max, fallback = {}, modelPolicy = {} }) {
   let j; try { j = parseJSON(text); } catch { j = {}; }
   const ids = new Set(seats.map(s => s.id));
   const pieces = [], taken = new Set();
@@ -65,7 +67,8 @@ export function parsePlan(text, { seats, lead, max = DEFAULTS.max, fallback = {}
     const agent = String(p?.agent || '').trim(), t = String(p?.text || '').trim();
     if (!ids.has(agent) || taken.has(agent) || !t) continue;
     taken.add(agent);
-    pieces.push({ agent, title: String(p.title || t).trim().slice(0, 90), text: t.slice(0, 2000) });
+    const complexity = COMPLEXITY_KEYS.includes(p?.complexity) ? p.complexity : null;
+    pieces.push({ agent, title: String(p.title || t).trim().slice(0, 90), text: t.slice(0, 2000), complexity: complexity || undefined, routerModel: complexity ? modelPolicy[complexity] : undefined });
     if (pieces.length >= max) break;
   }
   if (pieces.length === 1) return { pieces, why: String(j.why || '').slice(0, 200), solo: true }; // the lead named one desk: that desk does it, the lead writes it up

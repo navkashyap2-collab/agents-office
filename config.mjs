@@ -20,6 +20,10 @@ export function loadConfig() {
   c.mcp = { allow: [], deny: [], departments: {}, ...(base.mcp || {}), ...(local.mcp || {}) };
   c.tools = { web: true, browser: true, ...(base.tools || {}), ...(local.tools || {}) }; // V3.2 (16 Sep): browser = Claude in Chrome
   c.teams = { enabled: true, max: 4, ...(base.teams || {}), ...(local.teams || {}) }; // V3.2 (16 Sep): Agent Teams
+  // V3.7: dynamic model routing — the router (and each TEAM lead) picks a complexity tier
+  // per task/piece; this maps that tier to a concrete model. Change the mapping here to
+  // change policy everywhere without touching any of the 35 agent files.
+  c.modelPolicy = { fast: 'fable', reasoning: 'sonnet', strongest: 'opus', ...(base.modelPolicy || {}), ...(local.modelPolicy || {}) };
   if (process.env.AO_NAME) c.name = process.env.AO_NAME;
   if (process.env.AO_BRAIN) c.brain = process.env.AO_BRAIN;
   if (process.env.PORT) c.port = +process.env.PORT;
