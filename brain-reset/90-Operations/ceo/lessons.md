@@ -1,4 +1,7 @@
 ## 2026-09-18
+- Promotion to Reset Sales Control does not automatically queue an outbound email or call — Warners Transport needed a separate manual send (task12-warners-transport-send-1) after promotion; check promoted-but-uncontacted prospects each cycle.
+
+## 2026-09-18
 - Urban Quarter WA is the pipeline's first and only confirmed reply to date (repliedAtMs 1789454238976 on pilot-reactivation:urban-quarter-wa:v1) — worth tracking as the template case for what a working reactivation email looks like once follow-up closes it out.
 - Gmail signal processing (agentId 'gmail') and the follow-up agent both show 'no-recorded-runs' in agentRuns.health despite 110 pending signals and at least one known reply — worth checking whether these agents are wired into the pipeline at all.
 
