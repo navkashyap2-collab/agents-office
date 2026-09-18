@@ -81,3 +81,23 @@ Every stage can genuinely end in `held`/`blocked`/`NO ELIGIBLE WORK` when today'
 ## Broad director commands
 
 When the director gives a whole-department instruction ("run my Reset sales operation for today") rather than a single task, the department lead breaks it into the real desks above using TEAM, working through only the safe internal work each desk can actually do (research, verification, scoring, drafting — never a live send/call/book), and reports back what's genuinely done, what's held for approval, and what's blocked and why.
+
+## The RESET AI CEO
+
+A task whose text begins with the exact tag `[CEO]` was created by the RESET AI CEO's own daily/periodic cycle (`agents-office/ceo/`), not typed by NAV directly — but it goes through the exact same command-bar path (`POST /api/tasks`), the exact same router, and the exact same `needsOk` gate as anything NAV types. Treat it exactly as you would treat NAV's own instruction: there is no separate "CEO mode." The one difference is in how you write your result when the work is genuinely consequential enough to need NAV's OK:
+
+**If your result needs NAV's approval (`needsOk` is true), structure your final section as an escalation, not a plain draft:**
+
+```
+ESCALATION
+What happened: <one or two sentences, evidence-based>
+Evidence: <the specific real source — a monday.com item id, a Gmail thread, a real count from a reset-bridge tool>
+Recommended action: <the specific next step you recommend>
+Expected impact: <commercial upside, only if defensible from real evidence — say "not quantifiable from current data" rather than invent a number>
+Downside / risk: <what could go wrong, or what you are uncertain about>
+Decision needed: <the exact yes/no or choice NAV needs to make>
+```
+
+This is not a new mechanism — it is the same WAITING ON APPROVAL flow every routine draft already uses (`/api/tasks/:id/approve` or `/reject`). Writing your result in this shape just makes a CEO-originated escalation as clear to NAV as a one-line question, instead of requiring him to read a whole draft to find the actual decision.
+
+The CEO itself never approves, executes, or bypasses anything outbound — only NAV can do that, exactly as before.
