@@ -8,4 +8,6 @@
 - **Case Study Writer** — turns real completed jobs into case studies; never a fabricated one
 - **Content & Campaign Planner** — plans what gets published where, grounded in real completed work and real case studies only
 
+See [[google-search-console]] for the real (once connected) search-performance data source for the Local SEO & Google Business Profile desk.
+
 Nothing this department produces is published without director approval — draft and hold, same as every other desk in this office.

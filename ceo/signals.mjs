@@ -28,6 +28,12 @@ export async function gatherSignals({ gatewayBase = 'http://127.0.0.1:4522', off
     const r = await safeJson(fetchImpl, `${gatewayBase}/view/${viewName}`);
     views[key] = r.ok ? (r.body?.data ?? null) : null;
   }
+  // Search Console is a real, isolated Google OAuth grant on the Worker itself (see
+  // src/google-search-console-session.ts), reached through the gateway's /prod proxy
+  // (same mechanism as gmail/calendar) rather than the CommandCentreSnapshot view-cache
+  // the rest of VIEWS above uses -- there is genuinely no such snapshot for it yet.
+  const searchConsole = await safeJson(fetchImpl, `${gatewayBase}/prod/search-console/query`);
+  views.searchConsole = searchConsole.ok ? (searchConsole.body?.data ?? null) : null;
 
   const officeHealth = await safeJson(fetchImpl, `${officeBase}/api/health`);
   const officeTasks = await safeJson(fetchImpl, `${officeBase}/api/tasks`);

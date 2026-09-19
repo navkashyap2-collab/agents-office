@@ -84,13 +84,32 @@ export function buildResetStatus(snapshot) {
   };
 }
 
+/** Search Console (real, isolated Google OAuth grant on the Worker — see
+ * src/google-search-console-session.ts) is the first authoritative marketing data source
+ * Reset has; a fetch failure here must never take down the rest of the snapshot, and an
+ * unconfigured grant (503) is reported honestly as no data, never zero. */
+async function fetchSearchConsoleMarketing() {
+  try {
+    const res = await fetch(`${GATEWAY}/prod/search-console/query`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || !body.data) return {};
+    const rows = Array.isArray(body.data.rows) ? body.data.rows : [];
+    const totals = rows.reduce((acc, r) => ({ clicks: acc.clicks + (r.clicks || 0), impressions: acc.impressions + (r.impressions || 0) }), { clicks: 0, impressions: 0 });
+    return { SEARCH_CONSOLE_CLICKS: totals.clicks, SEARCH_CONSOLE_IMPRESSIONS: totals.impressions, SEARCH_CONSOLE_TOP_QUERIES: rows.length };
+  } catch {
+    return {};
+  }
+}
+
 export async function fetchResetStatus() {
   await ensureGateway();
   try {
     const res = await fetch(`${GATEWAY}/snapshot`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     const body = await res.json().catch(() => null);
     if (!res.ok) throw new Error((body && body.reason) || `gateway-http-${res.status}`);
-    return buildResetStatus(body.data);
+    const status = buildResetStatus(body.data);
+    status.departments.marketing = { ...status.departments.marketing, ...(await fetchSearchConsoleMarketing()) };
+    return status;
   } catch (e) {
     // Never fabricate a fallback — report exactly why real data isn't available right now.
     return { available: false, reason: (e && e.message) || String(e) };

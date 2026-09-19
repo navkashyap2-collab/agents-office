@@ -22,6 +22,7 @@ export async function testReachable() {
     '/view/va-tasks': { status: 200, body: { view: 'va-tasks', data: { assignmentCounts: [], performance: [] } } },
     '/view/calls': { status: 200, body: { view: 'calls', data: { recentCalls: [], callCountsByVa: [] } } },
     '/view/gmail-signals': { status: 200, body: { view: 'gmail-signals', data: { signalCounts: {}, recentSignals: [], killSwitch: { state: 'off' } } } },
+    '/prod/search-console/query': { status: 200, body: { data: { startDate: '2026-08-22', endDate: '2026-09-16', dimensions: ['query'], rows: [{ keys: ['commercial cleaning perth'], clicks: 12, impressions: 340, ctr: 0.0353, position: 8.2 }] }, runId: 'r1' } },
     '/api/health': { status: 200, body: { ok: true } },
     '/api/tasks': { status: 200, body: [{ id: 't1', state: 'next', dept: 'sales' }, { id: 't2', state: 'done', dept: 'fin', doneAt: 5 }] },
   });
@@ -31,6 +32,7 @@ export async function testReachable() {
   assert.equal(out.office.reachable, true);
   assert.equal(out.office.openTasks.length, 1);
   assert.equal(out.office.recentDone.length, 1);
+  assert.equal(out.views.searchConsole.rows[0].keys[0], 'commercial cleaning perth');
   console.log('ok: gatherSignals reachable case');
 }
 
@@ -40,6 +42,7 @@ export async function testGatewayDown() {
   assert.equal(out.gateway.reachable, false);
   assert.equal(out.views.ceoPriorities, null);
   assert.equal(out.views.funnel, null);
+  assert.equal(out.views.searchConsole, null);
   console.log('ok: gatherSignals gateway-down case reports null, not empty');
 }
 
