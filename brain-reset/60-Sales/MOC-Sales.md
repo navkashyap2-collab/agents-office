@@ -7,4 +7,4 @@
 - **Proposals** (Reset production agent — mirrors `proposal`) — renders the internal proposal artifact for director review, never a sent document
 - **Strata & Commercial Property Specialist** — see [[strata-commercial-property]]
 
-See [[va-roster]] for the human calling team, and [[../90-Operations/safety-and-suppression]] before any prospect work.
+See [[va-roster]] for the human calling team, [[../90-Operations/safety-and-suppression]] before any prospect work, and [[../90-Operations/va-outcome-routing]] for how a real VA call outcome deterministically gates every next action.
