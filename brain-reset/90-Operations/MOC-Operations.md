@@ -7,4 +7,4 @@
 - **Contact Verification** (Reset production agent — mirrors `contact`) — assesses a prospect against suppression/protection registers for cold-contact eligibility
 - **VA Calling Coordinator** (Reset production agent — mirrors `va`) — builds a held calling-queue preparation for eligible prospects and configured VAs
 
-See [[safety-and-suppression]] and [[reset-production-system]] — every desk in this department exists to keep the rest of the office honest and safe, not to prospect or draft itself.
+See [[safety-and-suppression]], [[reset-production-system]], [[va-outcome-routing]] and [[reset-ai-sales-pipeline]] — every desk in this department exists to keep the rest of the office honest and safe, not to prospect or draft itself.
