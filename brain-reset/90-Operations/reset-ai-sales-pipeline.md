@@ -10,7 +10,9 @@ Reset now has **two** real monday.com boards. Know which one to use:
 | **Reset AI Sales Pipeline** | `5031414133` (workspace 3157505) | The live board for every new AI-discovered prospect going forward. Read it via `reset_monday_ai_sales_pipeline`. |
 | **Reset Sales Control** | `5031212274` | **Read-only historical/protection source now.** Still real, still authoritative for anything already on it (ongoing conversations, current-client protection lookups, previous-decline history) — but no new prospect is ever written to it again. Read via `reset_monday_sales_control` exactly as before; never propose writing a new prospect there. |
 
-Built and activated 19 September 2026. Production code: `src/ai-sales-pipeline-*.ts` in the Reset repo (schema, VA assignment, promotion job, outcome job, read adapter, write client), plus `src/sales-control-migration-job.ts` for the one-time historical migration. Every rule below is enforced **in code**, not by an LLM's judgment — this note is the same rule in policy, same relationship this brain has to [[va-outcome-routing]].
+Built and activated 19 September 2026. Production code: `src/ai-sales-pipeline-*.ts` in the Reset repo (schema, VA assignment, promotion job, outcome job, read adapter, write client). Every rule below is enforced **in code**, not by an LLM's judgment — this note is the same rule in policy, same relationship this brain has to [[va-outcome-routing]].
+
+**The new board starts clean.** Director decision, 19 September 2026: no bulk historical migration from the old board, even though a one-time dry-run audit found 823 of 963 old-board rows nominally eligible. The new pipeline is populated only by fresh discovery below — the CEO/workforce finding, researching, verifying and qualifying genuinely new Perth prospects, never a bulk copy of old ones. See "Old prospects and reactivation" below for the one narrow, deliberate exception.
 
 ## The real end-to-end flow
 
@@ -32,14 +34,14 @@ Deterministic, in `ai-sales-pipeline-va-assignment.ts` — never a desk's or the
 - **Dimaka** and **Josephine** (secondary pool) are unchanged: they continue to work the old Sales Control board's existing secondary-queue mechanism exactly as before. They are never assigned anything from the new pipeline.
 - No assignment (of any kind) happens outside a real Perth weekday (`Australia/Perth`, UTC+8, no DST) — a Saturday/Sunday run promotes nothing and assigns no one.
 
-## The historical migration (old board → new board)
+## Old prospects and reactivation — never a bulk copy
 
-A one-time, deliberate, two-phase job — **never a blind bulk copy**:
+`src/sales-control-migration-job.ts` has two functions; know what each one actually does in production:
 
-1. **Dry run** (`sales_control_migration_dry_run_job`, one-shot, read-only) walks every real row on the old board and *decides* — using the identical clearance chain as new discovery (stop/needs-review gate → suppression/protection → duplicate-against-new-board) — whether it is genuinely active and eligible. Every decision (`migrated` / `skipped-stop` / `skipped-needs-review` / `skipped-duplicate` / `skipped-suppressed`) is persisted for director review before anything is ever written anywhere.
-2. **Apply** (`sales_control_migration_apply_job`) only runs once `sales_control_migration_apply_enabled` is explicitly turned on by a director — this is a deliberate decision point, never auto-approved from the dry run's counts. It writes only already-decided `migrated` rows, preserving each row's real current Sales Stage/Call Outcome (a migration of an ongoing relationship, not a reset to "Calling"), and re-validates against the live old-board row at write time in case it went hard-stop between the dry run and the apply.
+- `runSalesControlMigrationDryRun` — a one-shot, read-only audit that ran once (19 September 2026): it walked every real row on the old board and *decided*, using the identical clearance chain as new discovery, whether each was nominally eligible. Its evidence (`sales_control_migration_dry_run_evidence` in production, and the `sales_control_migration_decisions` table) is kept **for audit only** — e.g. if you're asked to summarize "what happened to the old prospect list," this is where the real counts are (823 migrated-eligible / 118 needs-review / 21 stopped / 1 suppressed of 963 real rows) — never estimate them.
+- `runSalesControlMigrationApply` — **retired, deliberately not wired into the scheduled handler.** It is never called in production and must not be re-added without an explicit director instruction to do so. Bulk historical migration was considered and declined.
 
-If you (the CEO or any desk) are ever asked to summarize "what happened to the old prospect list," this is the mechanism — check `sales_control_migration_dry_run_evidence` / `sales_control_migration_apply_evidence` in production for the real counts, never estimate.
+The only path an old prospect ever takes into the new board is **one at a time**, and only when the CEO independently identifies it as a genuinely worthwhile reactivation opportunity under the real reactivation rules already in [[va-outcome-routing]] (e.g. a `Has Cleaner`/`Future Review` row that has genuinely gone stale past its reactivation window) — never a batch, never because it merely passed the old dry run's gate.
 
 ## What this doesn't change
 
