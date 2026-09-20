@@ -12,12 +12,64 @@ export async function testBuildPromptMentionsNoFabrication() {
   console.log('ok: buildCeoPrompt includes anti-fabrication instruction and real signals');
 }
 
+export async function testBuildPromptRequiresAllSixDepartments() {
+  const { system, user } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
+  // 2026-09-19: marketing/fin/delivery have no real signal view yet (see signals.mjs) and
+  // were silently getting zero delegations as a result. The prompt must explicitly require
+  // covering all six departments — via a delegation or an honest "noAction" entry — so a
+  // missing signal source never again reads as "the CEO chose to ignore this department."
+  assert.match(system, /marketing/i);
+  assert.match(system, /\bfin\b/i);
+  assert.match(system, /delivery/i);
+  assert.match(system, /noAction/);
+  assert.match(user, /noAction/);
+  console.log('ok: buildCeoPrompt requires accounting for all six departments, including noAction');
+}
+
+export async function testBuildPromptRequiresActionClassification() {
+  // 2026-09-19: serve.mjs's immediate /run path never checks task.needsOk, so this
+  // classification (enforced in delegate.mjs) is the actual approval gate for CEO-originated
+  // work. The prompt must ask for it honestly, not as an afterthought.
+  const { system, user } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
+  assert.match(system, /actionClass/);
+  assert.match(system, /first-contact-or-committing/);
+  assert.match(system, /routine-outbound/);
+  assert.match(user, /actionClass/);
+  console.log('ok: buildCeoPrompt requires honest actionClass on every delegation');
+}
+
 export async function testParseValidJson() {
-  const text = '```json\n' + JSON.stringify({ priorities: [{ headline: 'h', evidence: 'e', severity: 'info' }], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' }) + '\n```';
+  const text = '```json\n' + JSON.stringify({ priorities: [{ headline: 'h', evidence: 'e', severity: 'info' }], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' }) + '\n```';
   const parsed = parseCeoResponse(text);
   assert.equal(parsed.priorities.length, 1);
   assert.equal(parsed.escalateForDeepReasoning, false);
+  assert.deepEqual(parsed.noAction, []);
   console.log('ok: parseCeoResponse parses fenced JSON');
+}
+
+export async function testParseDefaultsNoActionWhenMissing() {
+  // Older/looser model output that omits "noAction" entirely must not throw or silently
+  // become undefined — it defaults to an empty array like the other list fields do.
+  const text = JSON.stringify({ priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' });
+  const parsed = parseCeoResponse(text);
+  assert.deepEqual(parsed.noAction, []);
+  console.log('ok: parseCeoResponse defaults noAction to [] when the model omits it');
+}
+
+export async function testParseFailsClosedOnMissingOrBadActionClass() {
+  const text = JSON.stringify({
+    priorities: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '',
+    delegations: [
+      { dept: 'sales', text: 'a', dedupeKey: 'k1', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b' }, // actionClass missing
+      { dept: 'emails', text: 'b', dedupeKey: 'k2', hypothesis: 'h', evidence: 'e', owner: 'elead', nextAction: 'n', expectedBenefit: 'b', actionClass: 'send-it-now' }, // invalid value
+      { dept: 'marketing', text: 'c', dedupeKey: 'k3', hypothesis: 'h', evidence: 'e', owner: 'mlead', nextAction: 'n', expectedBenefit: 'b', actionClass: 'internal' }, // valid, unaffected
+    ],
+  });
+  const parsed = parseCeoResponse(text);
+  assert.equal(parsed.delegations[0].actionClass, 'first-contact-or-committing');
+  assert.equal(parsed.delegations[1].actionClass, 'first-contact-or-committing');
+  assert.equal(parsed.delegations[2].actionClass, 'internal');
+  console.log('ok: parseCeoResponse fails closed to "first-contact-or-committing" for missing/invalid actionClass, leaves a valid one alone');
 }
 
 export async function testParseInvalidThrows() {
@@ -40,15 +92,15 @@ function fakeSpawn(resultObj) {
 }
 
 export async function testRunCeoReasoningParsesResult() {
-  const resultObj = { priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const resultObj = { priorities: [], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
   const out = await runCeoReasoning({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [], spawnImpl: fakeSpawn(resultObj), model: 'sonnet' });
   assert.deepEqual(out.parsed, resultObj);
   console.log('ok: runCeoReasoning parses a fake claude CLI result');
 }
 
 export async function testEscalationRunsSecondPass() {
-  const first = { priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: true, escalationReason: 'ambiguous strata pricing call' };
-  const second = { priorities: [], delegations: [{ dept: 'sales', text: 't', dedupeKey: 'k', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', needsOkHint: false, complexity: 'strongest' }], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const first = { priorities: [], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: true, escalationReason: 'ambiguous strata pricing call' };
+  const second = { priorities: [], delegations: [{ dept: 'sales', text: 't', dedupeKey: 'k', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', actionClass: 'internal', needsOkHint: false, complexity: 'strongest' }], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
   let call = 0;
   const spawnImpl = () => (call++ === 0 ? fakeSpawn(first)() : fakeSpawn(second)());
   const out = await reasonWithEscalation({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [], spawnImpl });
@@ -59,7 +111,7 @@ export async function testEscalationRunsSecondPass() {
 }
 
 export async function testNoEscalationSkipsSecondPass() {
-  const first = { priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const first = { priorities: [], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
   const spawnImpl = fakeSpawn(first);
   const out = await reasonWithEscalation({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [], spawnImpl });
   assert.equal(out.second, null);
@@ -67,7 +119,11 @@ export async function testNoEscalationSkipsSecondPass() {
 }
 
 await testBuildPromptMentionsNoFabrication();
+await testBuildPromptRequiresAllSixDepartments();
+await testBuildPromptRequiresActionClassification();
 await testParseValidJson();
+await testParseDefaultsNoActionWhenMissing();
+await testParseFailsClosedOnMissingOrBadActionClass();
 await testParseInvalidThrows();
 await testRunCeoReasoningParsesResult();
 await testEscalationRunsSecondPass();

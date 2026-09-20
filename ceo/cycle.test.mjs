@@ -34,7 +34,7 @@ function fakeOfficeAndGateway({ tasksBody = [] } = {}) {
 
 export async function testMorningCycleIsIdempotentPerDay() {
   const dataDir = tmpDataDir(), brainPath = tmpBrainDir();
-  const noWork = { priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const noWork = { priorities: [], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
   const fetchImpl = fakeOfficeAndGateway();
   const spawnImpl = fakeReasoningSpawn(noWork);
   const first = await runCycle({ mode: 'morning', dataDir, brainPath, fetchImpl, spawnImpl });
@@ -48,7 +48,7 @@ export async function testMorningCycleIsIdempotentPerDay() {
 
 export async function testNoEligibleWorkIsHonestOutcome() {
   const dataDir = tmpDataDir(), brainPath = tmpBrainDir();
-  const noWork = { priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const noWork = { priorities: [], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
   const out = await runCycle({ mode: 'reassess', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn(noWork) });
   assert.equal(out.ran, true);
   assert.equal(out.summary.noEligibleWork, true);
@@ -59,14 +59,63 @@ export async function testNoEligibleWorkIsHonestOutcome() {
 
 export async function testDelegatesRealWork() {
   const dataDir = tmpDataDir(), brainPath = tmpBrainDir();
-  const withWork = { priorities: [{ headline: 'h', evidence: 'e', severity: 'attention' }], delegations: [{ dept: 'sales', text: 'do it', dedupeKey: 'sales:k1', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', needsOkHint: false, complexity: 'reasoning' }], risks: [], brainNotes: ['a durable lesson'], escalateForDeepReasoning: false, escalationReason: '' };
+  const withWork = { priorities: [{ headline: 'h', evidence: 'e', severity: 'attention' }], delegations: [{ dept: 'sales', text: 'do it', dedupeKey: 'sales:k1', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', actionClass: 'internal', needsOkHint: false, complexity: 'reasoning' }], noAction: [], risks: [], brainNotes: ['a durable lesson'], escalateForDeepReasoning: false, escalationReason: '' };
   const out = await runCycle({ mode: 'morning', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn(withWork) });
   assert.equal(out.summary.delegationsCreated.length, 1);
   assert.equal(out.summary.delegationsCreated[0].dept, 'sales');
+  assert.equal(out.summary.delegationsAwaitingRun.length, 0);
   const lessons = fs.readFileSync(path.join(brainPath, '90-Operations', 'ceo', 'lessons.md'), 'utf8');
   assert.match(lessons, /a durable lesson/);
   fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(brainPath, { recursive: true, force: true });
-  console.log('ok: real delegations are created and brain notes are written');
+  console.log('ok: real "internal" delegations auto-run, and brain notes are written');
+}
+
+export async function testFirstContactDelegationAwaitsNavInsteadOfAutoRunning() {
+  // 2026-09-19: the real fix. A delegation classified as first-contact-or-committing must be
+  // created (visible on the board) but never auto-run — that's the actual approval gate now
+  // that serve.mjs's immediate /run path is known not to check needsOk itself.
+  const dataDir = tmpDataDir(), brainPath = tmpBrainDir();
+  const withWork = { priorities: [], delegations: [{ dept: 'sales', text: 'Email a brand-new prospect', dedupeKey: 'sales:new-prospect', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', actionClass: 'first-contact-or-committing', needsOkHint: true, complexity: 'reasoning' }], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const out = await runCycle({ mode: 'morning', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn(withWork) });
+  assert.equal(out.summary.delegationsCreated.length, 0, 'must not be counted as auto-run');
+  assert.equal(out.summary.delegationsAwaitingRun.length, 1);
+  assert.equal(out.summary.delegationsAwaitingRun[0].dept, 'sales');
+  assert.equal(out.summary.delegationsAwaitingRun[0].autoRan, false);
+  const lessons = fs.readFileSync(path.join(brainPath, '90-Operations', 'ceo', 'lessons.md'), 'utf8');
+  assert.match(lessons, /held for NAV to run himself/);
+  fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(brainPath, { recursive: true, force: true });
+  console.log('ok: a first-contact-or-committing delegation is created but held for NAV, and the cycle notes it in the Brain');
+}
+
+export async function testSilentlyOmittedDepartmentsAreFlagged() {
+  // 2026-09-19 regression guard: sales gets a delegation, every other department gets
+  // neither a delegation nor a noAction entry — exactly the live bug (marketing/fin/delivery
+  // silently starved because no real signal view exists for them). The cycle must surface
+  // this in the brain notes and in the summary, not let it pass as a clean "delegated" cycle.
+  const dataDir = tmpDataDir(), brainPath = tmpBrainDir();
+  const partial = { priorities: [{ headline: 'h', evidence: 'e', severity: 'attention' }], delegations: [{ dept: 'sales', text: 'do it', dedupeKey: 'sales:k1', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', actionClass: 'internal', needsOkHint: false, complexity: 'reasoning' }], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' };
+  const out = await runCycle({ mode: 'morning', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn(partial) });
+  assert.deepEqual(out.summary.departmentsSilentlyOmitted.sort(), ['delivery', 'emails', 'fin', 'marketing', 'ops']);
+  const lessons = fs.readFileSync(path.join(brainPath, '90-Operations', 'ceo', 'lessons.md'), 'utf8');
+  assert.match(lessons, /CEO SELF-CHECK/);
+  assert.match(lessons, /marketing/);
+  fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(brainPath, { recursive: true, force: true });
+  console.log('ok: departments with neither a delegation nor a noAction reason are flagged, not silently dropped');
+}
+
+export async function testNoActionCoveredDepartmentsAreNotFlagged() {
+  // The other side of the same guard: when every non-delegated department has an honest
+  // noAction reason, that is NOT a silent omission and must not be flagged.
+  const dataDir = tmpDataDir(), brainPath = tmpBrainDir();
+  const covered = {
+    priorities: [], delegations: [{ dept: 'sales', text: 'do it', dedupeKey: 'sales:k1', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', actionClass: 'internal', needsOkHint: false, complexity: 'reasoning' }],
+    noAction: ['emails', 'marketing', 'ops', 'fin', 'delivery'].map(dept => ({ dept, reason: 'checked, nothing genuinely actionable this cycle' })),
+    risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '',
+  };
+  const out = await runCycle({ mode: 'morning', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn(covered) });
+  assert.deepEqual(out.summary.departmentsSilentlyOmitted, []);
+  fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(brainPath, { recursive: true, force: true });
+  console.log('ok: departments covered by an honest noAction reason are not flagged as silently omitted');
 }
 
 export async function testUnreachableEverythingSkipsCleanly() {
@@ -84,7 +133,7 @@ export async function testLockPreventsOverlap() {
   const { acquireCycleLock } = await import('./state.mjs');
   const held = acquireCycleLock(dataDir);
   assert.equal(held.acquired, true);
-  const out = await runCycle({ mode: 'reassess', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn({ priorities: [], delegations: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' }) });
+  const out = await runCycle({ mode: 'reassess', dataDir, brainPath, fetchImpl: fakeOfficeAndGateway(), spawnImpl: fakeReasoningSpawn({ priorities: [], delegations: [], noAction: [], risks: [], brainNotes: [], escalateForDeepReasoning: false, escalationReason: '' }) });
   assert.equal(out.ran, false);
   assert.match(out.reason, /already running/);
   held.release();
@@ -95,5 +144,8 @@ export async function testLockPreventsOverlap() {
 await testMorningCycleIsIdempotentPerDay();
 await testNoEligibleWorkIsHonestOutcome();
 await testDelegatesRealWork();
+await testFirstContactDelegationAwaitsNavInsteadOfAutoRunning();
+await testSilentlyOmittedDepartmentsAreFlagged();
+await testNoActionCoveredDepartmentsAreNotFlagged();
 await testUnreachableEverythingSkipsCleanly();
 await testLockPreventsOverlap();

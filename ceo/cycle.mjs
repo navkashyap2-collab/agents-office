@@ -17,6 +17,23 @@ import { reasonWithEscalation } from './reason.mjs';
 // cycle.mjs itself, not its parent directory. Two dirname() calls is the correct pattern.
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+// 2026-09-19 fix: verified live that sales/emails/ops were getting delegations every cycle
+// while marketing/fin/delivery got none — not because the CEO decided against them, but
+// because no real signal view exists yet for those three (see signals.mjs), and the model
+// correctly refused to fabricate one under ANTI_FABRICATION. That is a silent failure mode:
+// nothing in the logs or dashboard distinguished "genuinely nothing to do" from "this
+// department was never considered." This check makes the gap visible every single cycle
+// instead of invisible, and is a real regression guard against the CEO quietly collapsing
+// back into a Sales/Emails/Operations-only manager.
+const ALL_DEPTS = ['emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'];
+function findSilentlyOmittedDepartments(final) {
+  const covered = new Set([
+    ...(final.delegations || []).map(d => d.dept),
+    ...(final.noAction || []).map(n => n.dept),
+  ]);
+  return ALL_DEPTS.filter(d => !covered.has(d));
+}
+
 function reconcileInitiatives(dataDir, signals) {
   const doc = loadInitiatives(dataDir);
   const byId = new Map([...signals.office.openTasks, ...signals.office.recentDone].map(t => [t.id, t]));
@@ -57,20 +74,31 @@ export async function runCycle({ mode, dataDir, brainPath, gatewayBase, officeBa
     }
     const openInitiatives = reconcileInitiatives(dataDir, signals);
     const { first, second, final } = await reasonWithEscalation({ signals, ceoState, openInitiatives, spawnImpl });
-    const delegationsCreated = [], delegationsSkipped = [];
+    const delegationsCreated = [], delegationsSkipped = [], delegationsAwaitingRun = [];
     for (const d of final.delegations) {
-      const out = await delegate({ dept: d.dept, text: d.text, dedupeKey: d.dedupeKey, hypothesis: d.hypothesis, evidence: d.evidence, owner: d.owner, nextAction: d.nextAction, expectedBenefit: d.expectedBenefit, dataDir, officeBase, fetchImpl });
-      (out.status === 'created' ? delegationsCreated : delegationsSkipped).push({ dept: d.dept, ...out });
+      const out = await delegate({ dept: d.dept, text: d.text, dedupeKey: d.dedupeKey, hypothesis: d.hypothesis, evidence: d.evidence, owner: d.owner, nextAction: d.nextAction, expectedBenefit: d.expectedBenefit, actionClass: d.actionClass, dataDir, officeBase, fetchImpl });
+      if (out.status === 'created' && out.awaitingRun) { delegationsAwaitingRun.push({ dept: d.dept, ...out }); }
+      else if (out.status === 'created') { delegationsCreated.push({ dept: d.dept, ...out }); }
+      else { delegationsSkipped.push({ dept: d.dept, ...out }); }
     }
-    writeBrainLessons(brainPath, final.brainNotes);
+    const silentlyOmitted = findSilentlyOmittedDepartments(final);
+    const brainNotes = [...final.brainNotes];
+    if (silentlyOmitted.length) {
+      brainNotes.push(`CEO SELF-CHECK: ${silentlyOmitted.join(', ')} received neither a delegation nor a stated no-action reason this cycle — investigate whether this is a missing real-signal source (see signals.mjs) or a genuine prompt/reasoning gap.`);
+    }
+    if (delegationsAwaitingRun.length) {
+      brainNotes.push(`${delegationsAwaitingRun.length} task(s) created but held for NAV to run himself (first contact, a quote/price, or something else committing the business): ${delegationsAwaitingRun.map(d => `${d.dept}/${d.taskId}`).join(', ')}.`);
+    }
+    writeBrainLessons(brainPath, brainNotes);
     const noEligibleWork = final.delegations.length === 0 && final.priorities.length === 0;
     const summary = {
-      atMs: now, mode, priorities: final.priorities, delegationsCreated, delegationsSkipped, risks: final.risks,
+      atMs: now, mode, priorities: final.priorities, delegationsCreated, delegationsAwaitingRun, delegationsSkipped, risks: final.risks,
+      noAction: final.noAction || [], departmentsSilentlyOmitted: silentlyOmitted,
       noEligibleWork, escalated: !!second, modelUsed: { first: first.modelUsed, second: second ? second.modelUsed : null },
     };
     const newState = { ...ceoState, lastCycleAtMs: now, lastCycleSummary: summary, cyclesRun: (ceoState.cyclesRun || 0) + 1, ...(mode === 'morning' ? { lastMorningCycleDateLocal: todayLocal(now) } : {}) };
     saveCeoState(dataDir, newState);
-    appendCycleLog(dataDir, { mode, outcome: noEligibleWork ? 'no-eligible-work' : 'delegated', delegated: delegationsCreated.length, skipped: delegationsSkipped.length, escalated: !!second });
+    appendCycleLog(dataDir, { mode, outcome: noEligibleWork ? 'no-eligible-work' : 'delegated', delegated: delegationsCreated.length, awaitingRun: delegationsAwaitingRun.length, skipped: delegationsSkipped.length, escalated: !!second, departmentsSilentlyOmitted: silentlyOmitted });
     return { ran: true, reason: null, summary };
   } finally {
     lock.release();
