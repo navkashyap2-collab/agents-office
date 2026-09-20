@@ -351,8 +351,13 @@ else {
     });
     await step('smoke: command bar adds a task in demo mode', async () => {
       await page.click('.tp-dd'); await page.click('.tp-menu button[data-k="marketing"]');
-      await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel'); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
+      await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel'); await page.keyboard.press('Enter');
+      // Poll for the real post-Add state instead of a fixed sleep — under load (many
+      // local Node services running at once) 600ms was sometimes not enough. The hint
+      // and the feed row re-render on separate ticks, so both are polled, not just the hint.
+      await page.waitForFunction(() => /Added/.test(document.querySelector('.tp-hint')?.textContent || ''), null, { timeout: 3000 }).catch(() => {});
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added/.test(hint)) throw new Error('hint: ' + hint);
+      await page.waitForFunction(() => [...document.querySelectorAll('.tp-row .tp-t')].some(e => /teaser/i.test(e.textContent)), null, { timeout: 3000 }).catch(() => {});
       const row = await page.evaluate(() => [...document.querySelectorAll('.tp-row .tp-t')].some(e => /teaser/i.test(e.textContent))); if (!row) throw new Error('row not in the feed');
       return hint.trim().slice(0, 60);
     });
@@ -362,8 +367,15 @@ else {
       await page.fill('.tp-in', 'as a team, plan the spring outreach push');
       await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
       const pre = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Team · SALES LEAD/.test(pre)) throw new Error('hint before Add: ' + pre);
-      await page.keyboard.press('Enter'); await page.waitForTimeout(700);
+      await page.keyboard.press('Enter');
+      // Poll instead of a fixed 700ms sleep — a team Add creates a lead task plus
+      // several piece cards, more render work than a plain Add, and was the most
+      // frequent source of intermittent failure under load.
+      await page.waitForFunction(() => /Added — SALES LEAD has it with/.test(document.querySelector('.tp-hint')?.textContent || ''), null, { timeout: 3000 }).catch(() => {});
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added — SALES LEAD has it with/.test(hint)) throw new Error('hint: ' + hint);
+      // The hint updates on one render tick; the lead row + piece cards were observed
+      // rendering on a later one, so the hint alone was not a reliable readiness signal.
+      await page.waitForFunction(() => document.querySelectorAll('.tp-row.piece').length > 0, null, { timeout: 3000 }).catch(() => {});
       const n = await page.evaluate(() => ({ lead: [...document.querySelectorAll('.tp-row .tp-t')].filter(e => /⚑ As a team, plan the spring/.test(e.textContent)).length, pieces: document.querySelectorAll('.tp-row.piece').length, chip: [...document.querySelectorAll('.tp-team-chip')].map(e => e.textContent) }));
       if (n.lead !== 1 || n.pieces < 2 || !n.chip.some(c => /^TEAM [34]$/.test(c)) || !n.chip.includes('PIECE')) throw new Error(JSON.stringify(n));
       await page.fill('.tp-in', 'draft the renewal email'); await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
@@ -444,7 +456,10 @@ else {
       return `${cells} cells · ${rt} routine runs on the grid · rail ${rail} · task scheduled for ${target} · routine starts ${target} (none before) · marketing refused · week view 7`;
     });
     await step('smoke: department focus opens the chat rail', async () => {
-      await page.keyboard.press('1'); await page.waitForTimeout(1800);
+      await page.keyboard.press('1');
+      // Poll instead of a fixed 1800ms sleep — this open animation was the other
+      // frequent source of intermittent failure under load.
+      await page.waitForFunction(() => /agentOpen/.test(document.getElementById('rail')?.className || '') && /open/.test(document.getElementById('rail')?.className || ''), null, { timeout: 4000 }).catch(() => {});
       const cls = await page.evaluate(() => document.getElementById('rail').className); if (!/agentOpen/.test(cls) || !/open/.test(cls)) throw new Error('rail: ' + cls);
       const strip = await page.evaluate(() => document.querySelector('#topconn').className); if (!/focus/.test(strip)) throw new Error('top strip not centred');
       await page.keyboard.press('Escape'); await page.waitForTimeout(1200);
