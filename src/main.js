@@ -12,6 +12,7 @@ import {
 import { initMcp } from './mcp.js';
 import { RESET, metric as resetMetric } from './reset-status.js'; // RESET INTEGRATION: real Reset Commercial Cleaning data
 import { CEO, toggleCeoPanel, isCeoPanelOpen, closeCeoPanel, hasUnreadCeoBriefing } from './ceo-panel.js'; // RESET AI CEO: the briefing panel (R)
+import './director.js'; // V3.8: Director Overview — an optional preview dashboard, wires its own OFFICE/DIRECTOR switch and reads CEO/RESET below; touches nothing else in this file
 import { loadConnectors } from './connectors.js';
 import { initTasks } from './tasks.js';
 import { initBrain } from './brain.js';
@@ -24,7 +25,12 @@ const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.VSMShadowMap;
+// perf fix (19 Sep): VSM shadows run a separate blur render pass over the whole 2048² shadow
+// map every single frame, on top of the shadow pass itself — real GPU cost, paid whether or
+// not the camera or anything in view has moved. PCFSoft gets comparably soft-edged shadows
+// from hardware-filtered sampling in the main shadow pass, no extra pass, at a fraction of
+// the cost — the highest-confidence, most visually-invisible win available here.
+renderer.shadowMap.type = THREE.PCFShadowMap; // this Three.js build deprecates PCFSoftShadowMap and silently substitutes this anyway
 
 const scene = new THREE.Scene();
 
@@ -40,7 +46,7 @@ const CAM_DIST = 220;
 const OVERVIEW = { base: [-9, 0, -9], zoom: 0.8 }; // (-9,-9) shifts the scene straight DOWN the screen, no sideways drift
 const SR_ = new THREE.Vector3(1, 0, -1).normalize();
 function overviewPos() {
-  const pw = (tasks ? tasks.panelWidth() : 400) + 30;
+  const pw = (tasks ? tasks.panelWidth() : 400) + 40; // responsive fix: matches the badge clamp's clearance below so the overview centres with real breathing room, not a hairline gap, at 1366px-wide desktops
   const ppw = OVERVIEW.zoom * innerHeight / (2 * FR);
   const sh = (pw / 2) / ppw;
   return [OVERVIEW.base[0] + SR_.x * sh, 0, OVERVIEW.base[2] + SR_.z * sh];
@@ -108,7 +114,7 @@ key.shadow.mapSize.set(2048, 2048);
 key.shadow.camera.left = -95; key.shadow.camera.right = 95;
 key.shadow.camera.top = 95; key.shadow.camera.bottom = -95;
 key.shadow.camera.far = 400;
-key.shadow.radius = 7; key.shadow.blurSamples = 12;
+key.shadow.radius = 7; // blurSamples removed with VSM — PCFSoft has no such param
 key.shadow.bias = -0.0004;
 scene.add(key);
 
@@ -414,6 +420,7 @@ function updateBillboards() {
         if (!el) return; // the brain tag carries no metric rows
         el.textContent = nv;
         el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+        badgeRectDirty = true; // the badge's box may have reflowed with this new text
         const rel = document.querySelector(`[data-rm="${k}-${i}"]`); // docked rail copy
         if (rel) {
           rel.textContent = nv;
@@ -452,7 +459,16 @@ function worldAt(nx, ny) {
 let focused = null; // dept key when zoomed into a dept
 
 addEventListener('wheel', (e) => {
-  if (e.target.closest && e.target.closest('#rail')) return; // let the rail scroll
+  // fix (19 Sep): only #rail was ever excluded here, so scrolling over any OTHER panel with
+  // real content — Task Status, the CEO panel, the company board, the calendar, the Brain
+  // graph, Director Overview — got hijacked into zooming the 3D scene instead of scrolling
+  // that panel. Walk up from the actual target: the first genuinely scrollable ancestor (has
+  // overflow-y set AND more content than it can show) keeps its native wheel scroll; only
+  // wheeling over the scene itself reaches the zoom below.
+  for (let el = e.target; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) return;
+  }
   e.preventDefault();
   tween = null;
   view.arc = 0;
@@ -553,7 +569,7 @@ function setDark(on) {
     const m = o.material; if (!m.userData.base) m.userData.base = m.color.clone();
     if (o.userData.part === 'plinth') m.color.set(darkOn ? DARK.plinth : m.userData.base);
     else if (o.userData.part === 'walkway') m.color.set(darkOn ? DARK.walkway : m.userData.base);
-    else if (o.userData.part === 'floor') m.color.copy(darkOn ? mix(o.userData.chip, '#1b1c1a', o.userData.dept === 'brain' ? 0.07 : 0.22) : m.userData.base); // the Brain's pale sage needs a lighter touch
+    else if (o.userData.part === 'floor') m.color.copy(darkOn ? mix(o.userData.chip, '#1b1c1a', o.userData.dept === 'brain' ? 0.07 : 0.42) : m.userData.base); // OFFICE V3 (19 Sep): richer, more saturated pods against the dark ground — the Brain's pale sage still wants a lighter touch
   });
   hemi.color.set(darkOn ? 0x8e95a3 : 0xfdfff8); hemi.groundColor.set(darkOn ? 0x14151a : 0xd8d4c8); hemi.intensity = darkOn ? 0.75 : 0.85;
   key.color.set(darkOn ? 0xe4e9f2 : 0xfff1dd); key.intensity = darkOn ? 1.5 : 2.2;
@@ -1301,9 +1317,34 @@ function tickSim(now, dt) {
       ss.screenSet.tex.needsUpdate = true;
     }
   }
+  // RESET INTEGRATION: live equivalent of the block above — every desk shows what that
+  // agent is REALLY doing (its own real task title from tasks.tasks, the same live array
+  // tasks.js polls), never demo text. Redraws are cheap to check (a string compare) and
+  // only actually happen when an agent's real status changes, not on a random timer.
+  else if (tasks && tasks.isLive() && Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {
+    for (const r of Object.values(R)) {
+      const header = r.state === 'working' ? '● working' : r.state === 'stuck' ? '● stuck' : '○ idle';
+      let title;
+      if (r.state === 'working') {
+        const cur = tasks.tasks.find(t => t.agent === r.a.id && (t.state === 'doing' || t.state === 'waiting'));
+        title = cur ? cur.title : '';
+      } else {
+        const last = tasks.tasks.filter(t => t.agent === r.a.id && t.state === 'done').sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0))[0];
+        title = last ? 'last: ' + last.title : '';
+      }
+      const key = header + '|' + title;
+      if (r.screenKey === key) continue; // unchanged — nothing to redraw
+      r.screenKey = key;
+      const lines = title ? [title.slice(0, 27), title.length > 27 ? title.slice(27, 54) : ''].filter(Boolean) : ['no work yet'];
+      r.screenSet.draw(lines, header);
+      r.screenSet.tex.needsUpdate = true;
+    }
+  }
 }
 
 /* ---------- zoom LOD + HTML overlay projection ---------- */
+let badgeRectDirty = true;
+const badgeWH = {}; // cached {w,h} per department badge — see tickLOD
 const v3 = new THREE.Vector3();
 function toScreen(p) {
   v3.copy(p).project(camera);
@@ -1317,19 +1358,28 @@ function tickLOD() {
   const pillA = smooth(1.45, 1.85, z); // pills stay on at near — they name the agents
   // billboards persist at every zoom (v1 rule) — slightly larger when far, compact when near
   const badgeScale = 1.02 - 0.3 * smooth(1.2, 2.6, z);
+  // perf fix (20 Sep): offsetWidth/offsetHeight force a synchronous layout recalc — reading them
+  // here then writing badge.style.transform right after, every frame, for every department,
+  // thrashed layout on every single frame the camera moved. The raw box size only actually
+  // changes on resize or when a metric's text changes width (updateBillboards flags this).
+  if (badgeRectDirty) {
+    for (const [kk, dd] of Object.entries(deptRT)) badgeWH[kk] = { w: dd.badge.offsetWidth, h: dd.badge.offsetHeight };
+    badgeRectDirty = false;
+  }
   for (const [k, d] of Object.entries(deptRT)) {
     if (focused === k && k !== 'brain') continue; // this billboard is docked in the rail
     let [sx, sy] = toScreen(d.badgeAnchor);
     // keep billboards fully on screen (camera-readability rule)
-    const bh = d.badge.offsetHeight * badgeScale, bw = d.badge.offsetWidth * badgeScale;
+    const box = badgeWH[k] || { w: d.badge.offsetWidth, h: d.badge.offsetHeight };
+    const bh = box.h * badgeScale, bw = box.w * badgeScale;
     let xf;
     if (d.sideBadge) { // anchored by an edge, vertically centred (emails/sales/fin/delivery)
-      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 26); // V3.3: never under the panel
+      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 40); // V3.3: never under the panel — 40 (not 18px worth) so the gap reads as intentional, not a graze, at 1366px-wide desktops
       sy = clamp(sy, 64 + bh / 2, innerHeight - bh / 2 - 8);
       if (d.sideLeft) { sx = clamp(sx, bw + 8, rightEdge); xf = 'translate(-100%,-50%)'; }
       else { sx = clamp(sx, 8, rightEdge - bw); xf = 'translate(0,-50%)'; }
     } else {
-      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 26);
+      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 40);
       sy = clamp(sy, bh + 64, innerHeight - 12);
       sx = clamp(sx, bw / 2 + 8, rightEdge - bw / 2);
       xf = 'translate(-50%,-100%)';
@@ -1350,7 +1400,6 @@ function tickLOD() {
   }
 }
 
-/* ---------- clock (REAL local time — locked rule) ---------- */
 // RESET INTEGRATION: reflect the real bridge state in the top bar — CONNECTED (ok, fresh
 // this cycle), DEGRADED (stale — last-known values, timestamped, Reset unreachable right
 // now), or BLOCKED (never reached Reset at all). Never shown as healthy just because the
@@ -1384,13 +1433,6 @@ function tickCeoStatus() {
   el.title = 'RESET AI CEO briefing (R)' + (CEO.state === 'stale' ? ` — showing the last real briefing. Reason: ${CEO.reason}` : CEO.state === 'unavailable' ? ` — ${CEO.reason}` : '');
 }
 setInterval(tickCeoStatus, 2000); tickCeoStatus();
-
-function tickClock() {
-  const d = new Date();
-  document.getElementById('clock').textContent =
-    d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-setInterval(tickClock, 1000); tickClock();
 
 /* ---------- helpers ---------- */
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -1446,6 +1488,7 @@ if (HERO && HERO.target) { view.target.set(...HERO.target); view.zoom = HERO.zoo
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
   applyCamera();
+  badgeRectDirty = true;
 }
 addEventListener('resize', resize);
 resize();

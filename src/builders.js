@@ -90,11 +90,11 @@ export function makeDeskScreenTexture(chip) {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 160;
   const x = c.getContext('2d');
-  const draw = (lines) => {
+  const draw = (lines, header = '● working') => {
     // live cream screen (v1 rule: wood desks with live cream/mint screens)
     x.fillStyle = '#FDFFF8'; x.fillRect(0, 0, 256, 160);
     x.fillStyle = chip; x.fillRect(0, 0, 256, 26);
-    x.fillStyle = '#151414'; x.font = 'bold 15px Menlo, monospace'; x.fillText('● working', 10, 18);
+    x.fillStyle = '#151414'; x.font = 'bold 15px Menlo, monospace'; x.fillText(header, 10, 18);
     x.font = '13px Menlo, monospace';
     lines.forEach((l, i) => {
       x.fillStyle = i === lines.length - 1 ? '#1E9070' : 'rgba(21,20,20,.78)';

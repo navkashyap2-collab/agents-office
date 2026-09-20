@@ -43,5 +43,9 @@ export function metric(dept, key) {
 // same-origin endpoint to hit.
 if (typeof location !== 'undefined' && location.protocol.startsWith('http')) {
   refreshReset();
-  setInterval(refreshReset, 15000);
+  // D1 row-read optimisation (2026-09-18): matches the gateway's own snapshot cache window
+  // (reset-mcp-bridge/gateway.mjs's CACHE_MS) — polling faster than the cache refreshes buys
+  // no extra freshness, only extra real upstream fetches once every open browser tab's poll
+  // outlives the cache.
+  setInterval(refreshReset, 60000);
 }

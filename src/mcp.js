@@ -162,6 +162,13 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
   const topconn = document.getElementById('topconn');
   const topImgs = {};
   if (topconn) {
+    // responsive fix (19 Sep): the strip is genuinely scrollable — every connector is really
+    // there — but a mouse wheel only scrolls vertically by default, so without this it can
+    // read as "the rest are missing" rather than "scroll for more". Trackpads already pan
+    // horizontally on their own; this just gives a mouse wheel the same result.
+    topconn.addEventListener('wheel', (e) => {
+      if (e.deltaY && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { topconn.scrollLeft += e.deltaY; e.preventDefault(); }
+    }, { passive: false });
     topconn.innerHTML = `<span class="tc-lab"><span class="dot"></span>CONNECTED TO</span>`;
     uniqKeys.forEach((k, i) => {
       const img = document.createElement('img');
@@ -169,12 +176,14 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
       img.alt = img.title = LOGOS[k].name;
       if (STATUS[k] && STATUS[k] !== 'connected') { // real list: a server that is there but not usable
         img.classList.add('off', 'st-' + STATUS[k]);
-        img.title = LOGOS[k].name + ' — ' + (k === 'chrome' && STATUS[k] === 'pending' ? 'Claude in Chrome extension not paired on this machine — run `claude --chrome` once, then restart the office' // V3.2 (16 Sep)
-          : ({ 'needs-auth': 'needs authentication (run claude, then /mcp)', failed: 'failed to connect', pending: 'connecting…', denied: 'connected · blocked for agents in office.config.json' }[STATUS[k]] || STATUS[k]));
+        img.title = LOGOS[k].name + ' — ' + statusReason(k);
       }
       img.style.setProperty('--d', (0.15 + i * 0.09) + 's'); // staggered pop-in on load
       img.addEventListener('animationend', (e) => { if (e.animationName === 'tcin') img.classList.add('in'); });
-      img.addEventListener('click', () => fireConnector(k)); // presenter cue: click a logo → its dept(s) light up
+      img.addEventListener('click', () => { // fix (19 Sep): clicking used to only fire a silent beam — invisible for
+        fireConnector(k);                    // every connector that isn't yet authorized (most of them), so it read as
+        showTopconnTip(img, k);              // "nothing happens". Now every click shows the connector's real name + status.
+      });
       topconn.appendChild(img);
       topImgs[k] = img;
     });
@@ -184,7 +193,15 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
       none.textContent = 'nothing yet — connect in claude.ai or run: claude mcp add';
       topconn.appendChild(none);
     }
+    // perf fix (20 Sep): the wire-drawing tick below used to call getBoundingClientRect() on
+    // every connector icon EVERY ANIMATION FRAME just to find its x-position — forcing a
+    // synchronous layout recalc 15-30+ times/frame (layout thrashing), on top of whatever
+    // else that frame was already writing to the DOM (badge transforms, rail/dept-open
+    // animations). The icons only actually move on resize or when this strip scrolls
+    // horizontally or its focus mode toggles — so cache the rects and only re-read on those.
+    topconn.addEventListener('scroll', () => { rectDirty = true; });
   }
+  addEventListener('resize', () => { rectDirty = true; });
 
   // cam + dockAcur are set every tick. At overview (dockAcur low) all connector traffic
   // rides the PERMANENT WIRES below — nothing free-flies (free packets from the top bar
@@ -320,17 +337,21 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
     if (modelImgs.chatgpt) { modelImgs.chatgpt.remove(); delete modelImgs.chatgpt; const w = mwires.chatgpt; if (w) { w.path.setAttribute('d', ''); w.dot.setAttribute('opacity', 0); delete mwires.chatgpt; } }
     if (!usageEl) { usageEl = document.createElement('span'); usageEl.className = 'tm-usage'; topmodels.appendChild(usageEl); }
     const when = ts => ts ? new Date(ts).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '—';
-    const bar = (lab, x) => { if (!x) return ''; const cls = x.percent >= 90 ? 'c' : x.percent >= 75 ? 'w' : ''; return `<span>${lab}</span><span class="ub"><i class="${cls}" style="width:${x.percent}%"></i></span><b>${x.percent >= 100 ? 'LIMIT' : x.percent + '%'}</b>`; };
+    // responsive fix (19 Sep): "SESSION"/"WEEK"/"THIS WINDOW"/"TOKENS"/"RUNS" were all visible
+    // text — the Claude icon right before this already says what it is; the full explanation
+    // still lives in the title tooltip below, this just drops it from the bar itself so the
+    // connector icons get the room instead.
+    const bar = (x) => { if (!x) return ''; const cls = x.percent >= 90 ? 'c' : x.percent >= 75 ? 'w' : ''; return `<span class="ub"><i class="${cls}" style="width:${x.percent}%"></i></span><b>${x.percent >= 100 ? 'LIMIT' : x.percent + '%'}</b>`; };
     if (u && u.ok && u.source === 'claude') {
       usageEl.className = 'tm-usage';
-      usageEl.innerHTML = bar('SESSION', u.session) + (u.session && u.week ? '<span class="sep">·</span>' : '') + bar('WEEK', u.week);
-      usageEl.title = `Your Claude plan, as Claude Code shows it. Session resets ${when(u.session && u.session.resetsAt)} · week resets ${when(u.week && u.week.resetsAt)}.`;
+      usageEl.innerHTML = bar(u.session) + (u.session && u.week ? '<span class="sep">·</span>' : '') + bar(u.week);
+      usageEl.title = `Your Claude plan, as Claude Code shows it — session % · week %. Session resets ${when(u.session && u.session.resetsAt)} · week resets ${when(u.week && u.week.resetsAt)}.`;
     } else if (u && u.ok && u.source === 'office') {
       const w = u.window || {}; const n = w.tokens || 0; const tok = n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : String(n);
       usageEl.className = 'tm-usage off';
-      usageEl.innerHTML = `<span>THIS WINDOW</span><b>${tok}</b><span>TOKENS</span><span class="sep">·</span><b>${w.runs || 0}</b><span>RUNS</span>` + (w.resetsAt ? `<span class="sep">·</span><span>RESETS</span><b>${new Date(w.resetsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</b>` : '');
-      usageEl.title = `Claude's usage gauge is unavailable (${u.reason || 'no answer'}). This is the office's own count for the current five-hour window.`;
-    } else { usageEl.className = 'tm-usage off'; usageEl.innerHTML = '<span>USAGE UNAVAILABLE</span>'; usageEl.title = (u && u.reason) || ''; }
+      usageEl.innerHTML = `<b>${tok}</b><span class="sep">·</span><b>${w.runs || 0}</b>`;
+      usageEl.title = `Claude's usage gauge is unavailable (${u.reason || 'no answer'}). This is the office's own count for the current window — tokens · runs${w.resetsAt ? `, resets ${new Date(w.resetsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}.`;
+    } else { usageEl.className = 'tm-usage off'; usageEl.innerHTML = '<b>—</b>'; usageEl.title = 'Usage gauge unavailable' + ((u && u.reason) ? ': ' + u.reason : ''); }
   }
   function modelPulse(k, strong = false) {
     if (!modelImgs[k]) return; // a tile that has gone (ChatGPT in a live office) has no wire to pulse
@@ -349,6 +370,13 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
     wirePulses.push({ dept, el, reverse, shared: sk, model, t0: performance.now() + delay, dur: 1400 });
   }
   let stripDept = undefined;
+  let rectDirty = true;
+  const iconCX = {}, modelCX = {}; // cached top-bar icon centre-x, keyed by connector/model key
+  function refreshIconRects() {
+    for (const [k, img] of Object.entries(topImgs)) { const r = img.getBoundingClientRect(); iconCX[k] = (r.left + r.right) / 2; }
+    for (const [k, img] of Object.entries(modelImgs)) { const r = img.getBoundingClientRect(); modelCX[k] = (r.left + r.right) / 2; }
+    rectDirty = false;
+  }
   function tickWires(now, dt, wireA, focused) {
     // V3.4 (AJ): inside a department the header strip shows THAT dept's connectors (the others
     // hide); the wiring loom still fades out. At overview every logo shows and the loom is back.
@@ -361,6 +389,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
           topconn.classList.add('focus');
           topconn.querySelector('.tc-lab').innerHTML =
             `<span class="dot" style="background:${DEPTS[f].chip}"></span>${DEPTS[f].short} · CONNECTED TO`;
+          rectDirty = true; // the display toggles above reflow the strip — icon x-positions moved
         }
       } else {
         topconn.style.opacity = wireA;
@@ -369,6 +398,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
           for (const img of Object.values(topImgs)) img.style.display = '';
           topconn.classList.remove('focus');
           topconn.querySelector('.tc-lab').innerHTML = `<span class="dot"></span>CONNECTED TO`;
+          rectDirty = true;
         }
       }
       stripDept = f;
@@ -379,16 +409,14 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
     }
     if (wireA < 0.02) { svg.style.display = 'none'; return; }
     svg.style.display = 'block';
+    if (rectDirty) refreshIconRects();
     const hideWire = (w) => { w.path.setAttribute('d', ''); w.branch && w.branch.setAttribute('d', ''); w.jdot && w.jdot.setAttribute('opacity', 0); w.dot.setAttribute('opacity', 0); };
     for (const [dept, w] of Object.entries(wires)) {
       if (f && dept !== f) { hideWire(w); continue; } // focus: only this department's loom
       // branch fan: one drop per logo → junction under the cluster; trunk: junction → port.
       // junction depths are staggered per dept so neighbouring fans don't overlap.
       // gmail is EXCLUDED from every fan — it feeds the junctions via its own loom below
-      const xs = BY_DEPT[dept].filter(k => !SHARED[k]).map(k => {
-        const r = topImgs[k].getBoundingClientRect();
-        return (r.left + r.right) / 2;
-      });
+      const xs = BY_DEPT[dept].filter(k => !SHARED[k]).map(k => iconCX[k]);
       if (!xs.length) { // a dept fed only by shared connectors (EMAILS) has no trunk of its own
         w.path.setAttribute('d', ''); w.branch.setAttribute('d', '');
         w.jdot.setAttribute('opacity', 0); w.dot.setAttribute('opacity', 0);
@@ -421,8 +449,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
     // trunk-style conduit per using dept, ending at that connector's own socket on the pod
     for (const [key, sh] of Object.entries(shared)) {
       if (!topImgs[key]) continue;
-      const gr = topImgs[key].getBoundingClientRect();
-      const gx = (gr.left + gr.right) / 2, gsy = 50, gjy = sh.jy;
+      const gx = iconCX[key], gsy = 50, gjy = sh.jy;
       sh.drop.setAttribute('d', `M ${gx} ${gsy} L ${gx} ${gjy}`);
       sh.offset -= dt * (f ? 13 : 6);
       sh.drop.setAttribute('stroke-dashoffset', sh.offset);
@@ -448,8 +475,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
     // model wiring: Claude + ChatGPT logos → the Brain's back edge; they pulse on their own
     for (const [k, m] of Object.entries(mwires)) {
       if (!modelImgs[k]) continue;
-      const r = modelImgs[k].getBoundingClientRect();
-      const mx = (r.left + r.right) / 2, msy = 50;
+      const mx = modelCX[k], msy = 50;
       v3.set(m.port[0], m.port[1], m.port[2]).project(cam);
       const ex = (v3.x * 0.5 + 0.5) * innerWidth, ey = (-v3.y * 0.5 + 0.5) * innerHeight;
       m.path.setAttribute('d', `M ${mx} ${msy} C ${mx} ${msy + (ey - msy) * 0.45}, ${ex + 40} ${ey - (ey - msy) * 0.35}, ${ex} ${ey}`);
@@ -468,8 +494,16 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
       const k = (now - p.t0) / p.dur;
       if (k < 0) continue;
       if (k >= 1) { p.el.remove(); wirePulses.splice(i, 1); continue; }
-      const path = p.model ? mwires[p.model].path
-        : (p.shared && shared[p.shared].wires[p.dept]) ? shared[p.shared].wires[p.dept].path : wires[p.dept].path;
+      // fix (19 Sep): a pulse queued for the ChatGPT demo wire can still be in flight (its
+      // second, delayed leg especially) at the exact moment real Claude usage data arrives
+      // and setUsage() tears that wire down mid-flight (V3.1: "the ChatGPT tile and its wire
+      // are demo theatre and go the first time usage arrives") — the wire it was pulsing
+      // along is just gone by then, same as one hidden for a different dept in focus, so it
+      // gets dropped the same way instead of dereferencing a wire that no longer exists.
+      const wire = p.model ? mwires[p.model]
+        : (p.shared && shared[p.shared].wires[p.dept]) ? shared[p.shared].wires[p.dept] : wires[p.dept];
+      if (!wire) { p.el.remove(); wirePulses.splice(i, 1); continue; }
+      const path = wire.path;
       if (!path.getAttribute('d')) { p.el.remove(); wirePulses.splice(i, 1); continue; } // wire hidden (other dept in focus)
       const e = k * k * (3 - 2 * k);
       const pt = path.getPointAtLength((p.reverse ? 1 - e : e) * path.getTotalLength());
@@ -621,6 +655,23 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
   tip.className = 'mcp-tip';
   document.body.appendChild(tip);
   let tipHideAt = 0;
+  function statusReason(k) {
+    if (k === 'chrome' && STATUS[k] === 'pending') return 'Claude in Chrome extension not paired on this machine — run `claude --chrome` once, then restart the office'; // V3.2 (16 Sep)
+    return { 'needs-auth': 'needs authentication (run claude, then /mcp)', failed: 'failed to connect', pending: 'connecting…', denied: 'connected · blocked for agents in office.config.json' }[STATUS[k]] || STATUS[k];
+  }
+  // fix (19 Sep): the top-bar strip is 2D HTML, not the (retired) 3D sprite docks showTip()
+  // below reads from — clicking an icon there used to fall through to fireConnector() alone,
+  // which is a silent no-op for anything not yet authorized (most connectors). This is its
+  // own click tooltip so every icon, connected or not, gives real, visible feedback.
+  function showTopconnTip(img, k) {
+    const r = img.getBoundingClientRect();
+    const status = STATUS[k] || 'connected';
+    tip.innerHTML = `<b>${LOGOS[k].name}</b> MCP<br><span class="t-live">● ${status === 'connected' ? 'connected' : statusReason(k)}</span>`;
+    tip.style.left = Math.min(r.left, innerWidth - 220) + 'px';
+    tip.style.top = (r.bottom + 8) + 'px';
+    tip.classList.add('on');
+    tipHideAt = performance.now() + 2600;
+  }
   function showTip(sprite, x, y, now) {
     if (!sprite.visible) return; // docks hidden at overview — raycast still hits invisible sprites
     const item = items.find(it => it.sprite === sprite);
