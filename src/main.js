@@ -350,8 +350,8 @@ const BB_ROWS = profileRows() || {
     ['CANDIDATES VETTED', () => resetMetric('sales', 'CANDIDATES_VETTED')],
     ['QUALIFIED', () => resetMetric('sales', 'QUALIFIED')]],
   marketing: [
-    ['NEW INSIGHTS', () => '—'],
-    ['MARKETING DATA', () => 'NO DATA']],
+    ['SC CLICKS (28D)', () => resetMetric('marketing', 'SEARCH_CONSOLE_CLICKS')],
+    ['SC IMPRESSIONS', () => resetMetric('marketing', 'SEARCH_CONSOLE_IMPRESSIONS')]],
   ops: [
     ['PROPOSALS MADE', () => resetMetric('ops', 'PROPOSALS_MADE')],
     ['RECENT CALLS', () => resetMetric('ops', 'RECENT_CALLS')]],
