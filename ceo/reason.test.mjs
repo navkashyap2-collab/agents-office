@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { buildCeoPrompt, parseCeoResponse, runCeoReasoning, reasonWithEscalation } from './reason.mjs';
 
-const baseSignals = { generatedAtMs: 1, gateway: { reachable: true, health: {}, reason: null }, views: { ceoPriorities: [], funnel: [], agentRuns: null, systemHealth: null, prospects: null, suppression: null, outbox: null, vaTasks: null, calls: null, gmailSignals: null }, office: { reachable: true, health: {}, openTasks: [], recentDone: [] } };
+const baseSignals = { generatedAtMs: 1, gateway: { reachable: true, health: {}, reason: null }, views: { ceoPriorities: [], funnel: [], agentRuns: null, systemHealth: null, prospects: null, suppression: null, outbox: null, vaTasks: null, calls: null, gmailSignals: null }, office: { reachable: true, health: {}, openTasks: [], recentDone: [], failedTasks: [] } };
 
 export async function testBuildPromptMentionsNoFabrication() {
   const { system, user } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
@@ -36,6 +36,39 @@ export async function testBuildPromptRequiresActionClassification() {
   assert.match(system, /routine-outbound/);
   assert.match(user, /actionClass/);
   console.log('ok: buildCeoPrompt requires honest actionClass on every delegation');
+}
+
+export async function testBuildPromptExplainsReplyOutcomeSignal() {
+  // 2026-09-21: a real, already-correctly-resolved decline (Urban Quarter WA) was flagged
+  // as an unhandled reply because escalationState='none' cannot tell "nothing has looked at
+  // this" apart from "a reply arrived and needed no escalation." The prompt must teach the
+  // model to check replyOutcome first and never flag a genuine decline/dnc as a gap.
+  const { system } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
+  assert.match(system, /replyOutcome/);
+  assert.match(system, /declined.*never flag|never flag.*declined/i);
+  console.log('ok: buildCeoPrompt explains replyOutcome so a resolved decline is never misread as an unhandled gap');
+}
+
+export async function testBuildPromptExplainsOldVsNewPipelineSources() {
+  // 2026-09-21: the director directly reported the CEO kept re-flagging the same stale
+  // items (an old phone-first call queue) for days. Root cause: views.funnel/prospects/
+  // vaTasks are built entirely from the OLD, retired Reset Sales Control board and never
+  // see the current AI Sales Pipeline board at all. The prompt must say so explicitly and
+  // point at views.aiSalesPipeline as the one current source of truth, and must also stop
+  // discovery_promotion_job's stale D1 row from being read as a live incident.
+  const { system } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
+  assert.match(system, /funnel.*retired|retired.*funnel/is);
+  assert.match(system, /aiSalesPipeline/);
+  assert.match(system, /discovery_promotion_job/);
+  console.log('ok: buildCeoPrompt marks the old board views historical-only and aiSalesPipeline as the current source of truth');
+}
+
+export async function testBuildPromptDirectsRecoveryOfFailedWorkAndLeavesFinanceAlone() {
+  const { system, user } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
+  assert.match(system, /failed Office task/i);
+  assert.match(system, /finance is intentionally out of scope/i);
+  assert.match(user, /office.failedTasks/);
+  console.log('ok: CEO prompt treats failed tasks as recovery work and leaves finance out of scope');
 }
 
 export async function testParseValidJson() {
@@ -121,6 +154,9 @@ export async function testNoEscalationSkipsSecondPass() {
 await testBuildPromptMentionsNoFabrication();
 await testBuildPromptRequiresAllSixDepartments();
 await testBuildPromptRequiresActionClassification();
+await testBuildPromptExplainsReplyOutcomeSignal();
+await testBuildPromptExplainsOldVsNewPipelineSources();
+await testBuildPromptDirectsRecoveryOfFailedWorkAndLeavesFinanceAlone();
 await testParseValidJson();
 await testParseDefaultsNoActionWhenMissing();
 await testParseFailsClosedOnMissingOrBadActionClass();

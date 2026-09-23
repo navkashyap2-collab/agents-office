@@ -54,6 +54,21 @@ export async function testRoutineOutboundAutoRuns() {
   console.log('ok: "routine-outbound" auto-runs, same as "internal"');
 }
 
+export async function testRunHttpFailureIsReportedRatherThanClaimedAsAutoRun() {
+  const dataDir = tmpDir();
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith('/api/tasks')) return {ok: true, status: 200, json: async () => ({id: 'task-fail'})};
+    if (String(url).endsWith('/api/tasks/task-fail/run')) return {ok: false, status: 503, json: async () => ({error: 'unavailable'})};
+    throw new Error('unexpected');
+  };
+  const out = await delegate({ dept: 'sales', text: 'Check an internal metric', dedupeKey: 'sales:run-http-failure', hypothesis: 'h', evidence: 'e', owner: 'lexi', nextAction: 'n', expectedBenefit: 'b', actionClass: 'internal', dataDir, fetchImpl });
+  assert.equal(out.status, 'error');
+  assert.equal(out.autoRan, undefined);
+  assert.match(out.reason, /run http-503/);
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  console.log('ok: a failed task start is reported as an error, never claimed as auto-run');
+}
+
 export async function testFirstContactOrCommittingWaitsForNav() {
   // 2026-09-19: this is the real fix. serve.mjs's immediate /run path never checks task.needsOk,
   // so this classification in delegate.mjs is the only thing standing between the CEO and
@@ -119,6 +134,7 @@ export async function testMarkInitiativeResult() {
 
 await testCreatesAndRecordsInitiative();
 await testRoutineOutboundAutoRuns();
+await testRunHttpFailureIsReportedRatherThanClaimedAsAutoRun();
 await testFirstContactOrCommittingWaitsForNav();
 await testMissingActionClassFailsClosed();
 await testSkipsDuplicate();

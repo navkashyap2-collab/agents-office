@@ -52,7 +52,7 @@ import * as usage from './usage.mjs';
 import * as teams from './teams.mjs';
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
-import { fetchResetStatus } from './reset-bridge.mjs'; // RESET INTEGRATION: read-only bridge to Reset Command Centre's real /api/snapshot
+import { fetchResetStatus, fetchConnectors } from './reset-bridge.mjs'; // RESET INTEGRATION: read-only bridge to Reset Command Centre's real /api/snapshot
 
 const cfg = loadConfig();
 const HTML = path.join(ROOT, 'dist', 'command-centre-v2.html'); // built by build.mjs; shipped so npm start works without a build
@@ -478,6 +478,13 @@ const server = http.createServer(async (req, res) => {
       const page = fs.readFileSync(HTML, 'utf8');
       return res.end(url.pathname === '/dark' ? page.replace('<body>', '<body class="dark">') : page); // /dark: the same file, opened in dark mode
     }
+    // The visual Command Centre catalogue is a local module. Availability remains exposed
+    // through /api/mcp and the Connector details panel.
+    if (url.pathname === '/assets/mcp-catalog.js' || url.pathname === '/assets/profile.js') {
+      const source = url.pathname === '/assets/mcp-catalog.js' ? 'mcplogos.js' : 'profile.js';
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(fs.readFileSync(path.join(ROOT, 'src', source), 'utf8'));
+    }
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, version, backend, model: cfg.model, modelName: modelName(cfg.model), models: MODEL_KEYS, effort: cfg.effort || '', efforts: EFFORT_KEYS, name: cfg.name, brain: BRAIN, notes: graph.notes, depts: DEPT_KEYS,
       agents: agentsOut(), setup: setupMap(), routines: (l => ({ count: l.length, paused: l.filter(r => r.paused).length, depts: routines.ALLOWED }))(loadRoutines()), roster: { customised: roster.customised, briefed: roster.briefed, files: roster.files, problems: roster.problems }, skills: (({ count, shipped, brain, problems }) => ({ count, shipped, brain, problems }))(skills.summary()), tools: backend === 'claude-cli', mcp: mcp.summary(), teams: TEAMS, browser: mcp.summary().browser });
     if (url.pathname === '/api/agents') return json(res, 200, { agents: agentsOut(), problems: roster.problems, files: roster.files });
@@ -487,6 +494,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/brain') return json(res, 200, graph);
     if (url.pathname === '/api/usage') return json(res, 200, await getUsage(url.searchParams.get('refresh') === '1')); // V3.6: the plan's gauge (never a 500: unavailable is an answer)
     if (url.pathname === '/api/reset-status') return json(res, 200, await fetchResetStatus()); // RESET INTEGRATION: read-only, real Reset data — never a 500, unavailable is an honest answer
+    if (url.pathname === '/api/connectors') return json(res, 200, await fetchConnectors()); // RESET INTEGRATION: connector health panel — real integration_control status, never a 500
     if (url.pathname === '/api/ceo') { // RESET AI CEO: read-only, written by ceo/cycle.mjs — never a 500, missing state is an honest answer
       try { return json(res, 200, { available: true, state: JSON.parse(fs.readFileSync(path.join(DATA, 'ceo', 'ceo-state.json'), 'utf8')) }); }
       catch { return json(res, 200, { available: false, state: null }); }

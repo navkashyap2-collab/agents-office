@@ -1,11 +1,15 @@
 // Bundle src/main.js (+three) into a single self-contained HTML that opens by double-click.
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { resolve } from 'path';
 import { buildBrainGraph } from './graph-build.mjs';
 await buildBrainGraph(); // V3.6: bake the vault's wiki-link graph into src/braingraph.js
 
 const res = await build({
-  entryPoints: ['src/main.js'],
+  // Keep esbuild inside this project. Without an explicit working directory it walks
+  // parent folders during resolution, which can fail on this Windows workspace.
+  absWorkingDir: process.cwd(),
+  entryPoints: [resolve(process.cwd(), 'src', 'main.js')],
   bundle: true,
   format: 'iife',
   minify: true,

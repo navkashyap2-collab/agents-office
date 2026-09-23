@@ -47,5 +47,8 @@ if (typeof location !== 'undefined' && location.protocol.startsWith('http')) {
   // (reset-mcp-bridge/gateway.mjs's CACHE_MS) — polling faster than the cache refreshes buys
   // no extra freshness, only extra real upstream fetches once every open browser tab's poll
   // outlives the cache.
-  setInterval(refreshReset, 60000);
+  // Real profiling finding (20 Sep 2026): skip the fetch while backgrounded (an always-open
+  // ops dashboard sits hidden most of the day), and catch up immediately on return.
+  setInterval(() => { if (!document.hidden) refreshReset(); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshReset(); });
 }

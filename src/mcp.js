@@ -156,8 +156,13 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
   // SHARED connectors (gmail: five depts; notion: every dept, V3.1) sit at the far RIGHT end
   // of the strip and each runs its OWN loom (below) instead of joining any dept's cluster/fan
   const SHARED = LIVE ? connectors.shared : (profileShared() || { notion: '#151414', gmail: '#EA4335' });
-  const uniqKeys = [...new Set(Object.values(BY_DEPT).flat())].filter(k => !SHARED[k]);
+  // The header is the office's familiar tool catalogue. It must not collapse to whichever
+  // connectors happen to answer during one server boot; live availability belongs in the
+  // Connector details panel, where it can be read without changing the Command Centre's face.
+  const visualCatalogue = [...new Set(Object.values(MCP_BY_DEPT).flat())];
+  const uniqKeys = (LIVE ? visualCatalogue : [...new Set(Object.values(BY_DEPT).flat())]).filter(k => !SHARED[k]);
   for (const k of ((LIVE && connectors.off) || [])) if (!uniqKeys.includes(k)) uniqKeys.push(k); // present but unusable: shown grey, never wired
+  for (const k of Object.values(BY_DEPT).flat()) if (!uniqKeys.includes(k) && !SHARED[k]) uniqKeys.push(k);
   for (const k of Object.keys(SHARED)) uniqKeys.push(k);
   const topconn = document.getElementById('topconn');
   const topImgs = {};

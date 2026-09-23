@@ -199,15 +199,15 @@ export function poseWork(g, mode, t, dt) {
   // standK 0 = seated at desk, 1 = standing beside it (position lerp happens in main).
   const tg = { shLx: -1.05, shLz: 0.25, shRx: -1.05, shRz: -0.25, headRx: 0.04, headRy: 0, torsoRx: 0, posY: 0.55, standK: 0 };
   switch (mode) {
-    case 'type':
-      tg.shLx = -1.05 + Math.sin(t / 170) * 0.12;
-      tg.shRx = -1.05 + Math.sin(t / 140 + 1.3) * 0.14;
-      tg.headRx = 0.07 + Math.sin(t / 380) * 0.05;
+    case 'type': // liveliness pass (20 Sep 2026): larger sway/nod amplitude, same rhythm
+      tg.shLx = -1.05 + Math.sin(t / 170) * 0.17;
+      tg.shRx = -1.05 + Math.sin(t / 140 + 1.3) * 0.19;
+      tg.headRx = 0.07 + Math.sin(t / 380) * 0.08;
       break;
     case 'read': // leans back off the keyboard, arms drop to the sides, head tilts at the screen
       tg.shLx = -0.3; tg.shLz = -0.35; tg.shRx = -0.3; tg.shRz = 0.35;
       tg.torsoRx = -0.12;
-      tg.headRx = 0.18 + Math.sin(t / 650) * 0.05;
+      tg.headRx = 0.18 + Math.sin(t / 650) * 0.08;
       break;
     case 'phone': // right arm visibly up and out to the ear, small nods
       tg.shRx = -2.3; tg.shRz = 0.55; tg.shLx = -0.4; tg.shLz = -0.2;
@@ -219,6 +219,10 @@ export function poseWork(g, mode, t, dt) {
       break;
     case 'sip': // mug arm up and out, head tips back a touch
       tg.shRx = -2.0; tg.shRz = 0.5; tg.shLx = -0.6; tg.headRx = -0.12;
+      break;
+    case 'snack': // idle-only: opposite arm to 'sip', reaching down and in for a bite, small chewing nod
+      tg.shLx = -2.1; tg.shLz = 0.4; tg.shRx = -0.5; tg.shRz = -0.2;
+      tg.headRx = 0.1 + Math.sin(t / 260) * 0.04;
       break;
     case 'spin': // slow chair spin, arms out — rotation itself driven in main
       tg.shLx = -0.7; tg.shLz = -0.55; tg.shRx = -0.7; tg.shRz = 0.55;
@@ -246,6 +250,15 @@ export function poseWork(g, mode, t, dt) {
       tg.shLx = -0.2; tg.shLz = -0.3; tg.shRx = -0.2; tg.shRz = 0.3;
       tg.headRx = 0.45; tg.posY = 0.5;
       break;
+    case 'idle': // no real task on this desk right now -- relaxed at the seat, arms down,
+      // not "at the keyboard" (never type/read/phone: those would misleadingly imply
+      // active work that isn't happening). Real movement (a look around, a slight sway),
+      // just not work-shaped. Added 20 Sep 2026 -- this used to be posePerson('stand', now)
+      // called with no position/facing update at all, so an idle desk never moved.
+      tg.shLx = -0.15 + Math.sin(t / 500) * 0.05; tg.shLz = 0.15;
+      tg.shRx = -0.15 - Math.sin(t / 500) * 0.05; tg.shRz = -0.15;
+      tg.headRy = Math.sin(t / 900) * 0.12;
+      break;
   }
   if (!u.cur) u.cur = { ...tg };
   const k = 1 - Math.exp(-(dt || 0.016) * 7);
@@ -255,7 +268,7 @@ export function poseWork(g, mode, t, dt) {
   u.headG.rotation.x = u.cur.headRx; u.headG.rotation.y = u.cur.headRy;
   u.torso.rotation.x = u.cur.torsoRx;
   u.legs.visible = u.cur.standK > 0.4;
-  g.position.y = u.cur.posY + Math.sin(t / 460) * 0.02;
+  g.position.y = u.cur.posY + Math.sin(t / 460) * 0.032; // liveliness pass (20 Sep 2026): was .02
 }
 
 export function posePerson(g, pose, t = 0) {

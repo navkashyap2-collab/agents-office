@@ -81,5 +81,8 @@ export function hasUnreadCeoBriefing() {
 
 if (typeof location !== 'undefined' && location.protocol.startsWith('http')) {
   refreshCeo();
-  setInterval(async () => { await refreshCeo(); if (open) render(); }, 30000);
+  // Real profiling finding (20 Sep 2026): skip the fetch while backgrounded (an always-open
+  // ops dashboard sits hidden most of the day), and catch up immediately on return.
+  setInterval(async () => { if (document.hidden) return; await refreshCeo(); if (open) render(); }, 30000);
+  document.addEventListener('visibilitychange', async () => { if (!document.hidden) { await refreshCeo(); if (open) render(); } });
 }

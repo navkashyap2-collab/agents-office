@@ -23,7 +23,7 @@ import { findOpenInitiative, loadInitiatives, saveInitiatives } from './state.mj
 
 const AUTO_RUN_ACTION_CLASSES = new Set(['internal', 'routine-outbound']);
 
-export async function delegate({ dept, text, dedupeKey, hypothesis, evidence, owner, nextAction, expectedBenefit, actionClass, model, effort, team, dataDir, officeBase = 'http://localhost:4523', fetchImpl = fetch }) {
+export async function delegate({ dept, text, dedupeKey, hypothesis, evidence, owner, nextAction, expectedBenefit, actionClass, model, effort, team, dataDir, officeBase = 'http://127.0.0.1:4520', fetchImpl = fetch }) {
   const doc = loadInitiatives(dataDir);
   const existing = findOpenInitiative(doc, dedupeKey);
   if (existing) {
@@ -57,7 +57,11 @@ export async function delegate({ dept, text, dedupeKey, hypothesis, evidence, ow
   }
 
   try {
-    await fetchImpl(`${officeBase}/api/tasks/${created.id}/run`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const res = await fetchImpl(`${officeBase}/api/tasks/${created.id}/run`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    if (!res.ok) {
+      const initiative = recordInitiative();
+      return { status: 'error', taskId: created.id, initiativeId: initiative.id, reason: `created but run http-${res.status}` };
+    }
   } catch (e) {
     // The task exists even if kicking off the run failed to respond in time; the office's own
     // 20s routine clock does not pick up ad-hoc tasks, so record the failure honestly rather

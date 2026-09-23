@@ -42,6 +42,21 @@ function runCountFor(agentRuns, agentIds) {
   return (agentRuns || []).filter(r => agentIds.includes(r.agentId)).length;
 }
 
+/** Start of the reporting day at Reset's operating location. Snapshot timestamps are UTC
+ * milliseconds; using the browser or server's local timezone here would make the daily
+ * report roll over at different times on different machines. */
+export function perthDayStartMs(nowMs) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Australia/Perth', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(nowMs));
+  const field = type => parts.find(part => part.type === type)?.value;
+  return Date.UTC(Number(field('year')), Number(field('month')) - 1, Number(field('day'))) - (8 * 60 * 60 * 1000);
+}
+
+function countSince(rows, field, sinceMs) {
+  return (rows || []).filter(row => Number(row?.[field]) >= sinceMs).length;
+}
+
 /** Transforms Reset's real CommandCentreSnapshot into exactly the department metrics
  * this office's UI knows how to render — nothing more, nothing invented. */
 export function buildResetStatus(snapshot) {
@@ -52,14 +67,22 @@ export function buildResetStatus(snapshot) {
   const wave1 = snapshot.wave1 || [];
   const funnel = snapshot.funnel || [];
 
-  const emailsSent = (gmail.outbox || []).filter(r => r.completedAtMs != null).length;
   const gmailSignals = sum(gmail.signalCounts);
-  const candidatesVetted = sum(discovery.byStatus);
-  const qualified = (discovery.byStatus || {}).qualified || 0;
-  const recentCalls = (vaFloor.recentCalls || []).length;
   const proposalsMade = runCountFor(agentRuns, ['proposal']);
   const deliveryAgentRuns = runCountFor(agentRuns, ['walkthrough', 'appointment', 'premises', 'tender']);
   const escalated = (funnel.find(f => f.stage === 'Escalated (VA call task)') || {}).count ?? 0;
+  const reportingNowMs = Number(snapshot.generatedAtMs) || Date.now();
+  const todayStartMs = perthDayStartMs(reportingNowMs);
+  const emailsSentToday = countSince(gmail.outbox, 'completedAtMs', todayStartMs);
+  const prospectsVettedToday = countSince(discovery.recent, 'vettedAtMs', todayStartMs);
+  const qualifiedToday = (discovery.recent || []).filter(row => row?.status === 'qualified' && Number(row.vettedAtMs) >= todayStartMs).length;
+  // Dialpad can replay or normalize old records with a fresh timestamp. Count a
+  // daily call only once its real outcome has been logged.
+  const callOutcomesToday = (vaFloor.recentCalls || []).filter((call) =>
+    Number(call?.startedAtMs) >= todayStartMs
+    && typeof call?.disposition === 'string'
+    && call.disposition.trim().length > 0
+  ).length;
 
   const needsApproval =
     (gmail.outbox || []).filter(r => r.state === 'needs_review' || r.state === 'held').length +
@@ -69,10 +92,12 @@ export function buildResetStatus(snapshot) {
     available: true,
     fetchedAtMs: snapshot.generatedAtMs,
     departments: {
-      emails: { EMAILS_SENT: emailsSent, GMAIL_SIGNALS: gmailSignals },
-      sales: { CANDIDATES_VETTED: candidatesVetted, QUALIFIED: qualified },
+      // These are deliberately daily measures. Lifetime totals hid whether the team had
+      // actually achieved anything since the previous director briefing.
+      emails: { EMAILS_SENT_TODAY: emailsSentToday, GMAIL_SIGNALS: gmailSignals },
+      sales: { CANDIDATES_VETTED_TODAY: prospectsVettedToday, QUALIFIED_TODAY: qualifiedToday },
       marketing: {}, // no authoritative marketing data exists in Reset today
-      ops: { PROPOSALS_MADE: proposalsMade, RECENT_CALLS: recentCalls },
+      ops: { PROPOSALS_MADE: proposalsMade, CALL_OUTCOMES_TODAY: callOutcomesToday },
       fin: {}, // revenue_events is not applied to production D1 — genuinely no data, not a gap to paper over
       delivery: { AGENT_RUNS: deliveryAgentRuns, ESCALATED: escalated },
     },
@@ -80,6 +105,7 @@ export function buildResetStatus(snapshot) {
       killSwitchState: snapshot.killSwitch ? snapshot.killSwitch.state : 'UNKNOWN',
       needsApproval,
       agentRunsTotal: agentRuns.length,
+      reportingDayStartMs: todayStartMs,
     },
   };
 }
@@ -101,6 +127,24 @@ async function fetchSearchConsoleMarketing() {
   }
 }
 
+/** Business Profile (real, isolated Google OAuth grant on the Worker — see
+ * src/google-business-profile-session.ts) is the second authoritative marketing data
+ * source; same honesty rule as Search Console above — a fetch failure or unconfigured
+ * grant (503) never takes down the rest of the snapshot and is never reported as zero. */
+async function fetchBusinessProfileMarketing() {
+  try {
+    const res = await fetch(`${GATEWAY}/prod/business-profile/metrics`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || !body.data) return {};
+    const series = Array.isArray(body.data.series) ? body.data.series : [];
+    const totalFor = metric => series.find(s => s.metric === metric)?.points.reduce((sum, p) => sum + (p.value || 0), 0) ?? 0;
+    const views = ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'].reduce((sum, m) => sum + totalFor(m), 0);
+    return { GBP_VIEWS: views, GBP_CALL_CLICKS: totalFor('CALL_CLICKS'), GBP_WEBSITE_CLICKS: totalFor('WEBSITE_CLICKS') };
+  } catch {
+    return {};
+  }
+}
+
 export async function fetchResetStatus() {
   await ensureGateway();
   try {
@@ -108,11 +152,32 @@ export async function fetchResetStatus() {
     const body = await res.json().catch(() => null);
     if (!res.ok) throw new Error((body && body.reason) || `gateway-http-${res.status}`);
     const status = buildResetStatus(body.data);
-    status.departments.marketing = { ...status.departments.marketing, ...(await fetchSearchConsoleMarketing()) };
+    // Real regression found 20 September 2026 via direct profiling: these were two
+    // sequential awaits, each a real network round trip through the gateway to the live
+    // Worker (including a fresh OAuth token refresh on the Worker side), roughly doubling
+    // this endpoint's latency for no reason -- neither depends on the other's result.
+    const [searchConsole, businessProfile] = await Promise.all([fetchSearchConsoleMarketing(), fetchBusinessProfileMarketing()]);
+    status.departments.marketing = { ...status.departments.marketing, ...searchConsole, ...businessProfile };
     return status;
   } catch (e) {
     // Never fabricate a fallback — report exactly why real data isn't available right now.
     return { available: false, reason: (e && e.message) || String(e) };
+  }
+}
+
+/** Real per-connector job/verification status, straight from the Worker's own
+ * integration_control table (see src/bridge-read-api.ts's curated 'system/connectors'
+ * route) -- for the Command Centre's connector health panel. Same honesty contract as
+ * fetchResetStatus(): unavailable is reported honestly, never a fabricated fallback. */
+export async function fetchConnectors() {
+  await ensureGateway();
+  try {
+    const res = await fetch(`${GATEWAY}/prod/system/connectors`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || !body.data) throw new Error((body && body.reason) || `gateway-http-${res.status}`);
+    return { available: true, connectors: body.data.connectors || [], fetchedAtMs: Date.now() };
+  } catch (e) {
+    return { available: false, connectors: [], reason: (e && e.message) || String(e) };
   }
 }
 

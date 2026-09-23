@@ -10,6 +10,43 @@ const ANTI_FABRICATION = 'Never invent, guess or fabricate a prospect, contact, 
   'A view that is null in the signals below means no verified source exists right now for that data — say so plainly; do not treat null as zero or as "nothing happening." ' +
   'When evidence is insufficient for a call, say HOLD and explain what is missing rather than guessing.';
 
+// 2026-09-21 fix: a real, already-correctly-resolved decline (Urban Quarter WA, 15
+// September 2026 — the prospect replied "happy with our current cleaners," was classified,
+// logged to the CRM, and correctly received no further outreach) was flagged as an
+// unhandled gap ("Live prospect reply sitting with no escalation task") purely because
+// outbox.escalationState reads 'none' for BOTH "nothing has looked at this yet" and "a
+// reply arrived and needed no escalation in the first place" — the field cannot tell those
+// apart on its own. outbox rows now carry replyOutcome for exactly this: 'declined' or
+// 'dnc' means the reply was genuinely resolved and closed, never a gap to flag; 'positive'
+// still deserves a priority only if no newer CRM/task activity shows someone already acted
+// on it; 'ambiguous' or 'unreadable' are the only outcomes that may genuinely need a human
+// to read the thread; and null (no replyOutcome recorded at all) alongside a set repliedAtMs
+// is the one combination that may be a real unclassified gap worth flagging.
+const REPLY_OUTCOME_GUIDANCE = 'Every outbox row includes replyOutcome (\'positive\'|\'declined\'|\'dnc\'|\'ambiguous\'|\'unreadable\'|null). ' +
+  'Before flagging any row with repliedAtMs set and escalationState=\'none\' as an unhandled reply, check replyOutcome first: ' +
+  '\'declined\' or \'dnc\' means it was already classified and correctly closed with no escalation needed — never flag it as a gap. ' +
+  '\'positive\' deserves a priority only if nothing in the signals shows it was already acted on. ' +
+  'Only \'ambiguous\', \'unreadable\', or null (no outcome recorded despite a reply) may genuinely need a human to look — and even then, say plainly what the gap is (e.g. "reply received but not yet classified"), never imply it was never looked at when replyOutcome shows otherwise.';
+
+// 2026-09-21 fix: the director directly reported that this cycle keeps re-flagging the
+// same dead-end items for days on end -- confirmed live: views.funnel is built entirely
+// from the OLD, retired Reset Sales Control board / Wave1 pilot (see
+// command-centre/server/readModel.ts's buildFunnel(wave1) -- it never receives any AI
+// Sales Pipeline data at all), so every "phone-first queue" / "qualified, none promoted"
+// priority this cycle produced from it was about a system this business no longer runs
+// new prospects through. Same for views.prospects and views.vaTasks -- both are old-board
+// artifacts. views.systemHealth.jobStates also still lists discovery_promotion_job as
+// 'running', which is not a live incident: that job was intentionally retired when the AI
+// Sales Pipeline board replaced it as the sole destination for new prospects (see
+// src/index.ts's own comment on this) and its stale D1 row is a known, harmless leftover,
+// never something needing action. views.aiSalesPipeline (added this cycle) is the real,
+// live read of the current board (5031414133) and is now the only current source of truth
+// for sales pipeline priorities and delegations.
+const OLD_SYSTEM_GUIDANCE = 'views.funnel, views.prospects and views.vaTasks all come from the OLD, retired Reset Sales Control board and the Wave1 pilot -- that system no longer receives new prospects and has not for days. ' +
+  'Treat everything in those three views as historical record only: never generate a new priority, risk or delegation about a prospect, queue or task-type that appears only there (e.g. an old phone-first call queue, an old qualified-but-not-promoted count). ' +
+  'views.aiSalesPipeline is the current, live Reset AI Sales Pipeline board (5031414133) and is the ONLY source of truth for what today\'s real sales pipeline looks like -- base every sales-pipeline priority and delegation on it instead. ' +
+  'Separately, if views.systemHealth.jobStates lists discovery_promotion_job, it is a known-retired job whose D1 row was never cleaned up -- never flag it as a stuck or failing job; that job is not supposed to update and its inactivity is not a problem.';
+
 // 2026-09-19 fix: the real signal views (funnel, prospects, calls, gmail, va tasks, etc.)
 // only ever cover sales/emails/ops — no gateway view exists yet for marketing, fin or
 // delivery. Combined with ANTI_FABRICATION, that silently starved those three departments:
@@ -20,9 +57,11 @@ const ANTI_FABRICATION = 'Never invent, guess or fabricate a prospect, contact, 
 // cycle instead of invisible, and gives the model an honest way to still engage those three
 // departments (asking their own lead to go get real data is not fabrication).
 const DEPARTMENT_COVERAGE = 'Every cycle you must account for ALL SIX departments — emails, sales, marketing, ops, fin, delivery — not only the ones with real signal data below. ' +
-  'The signals below are strongest for sales/emails/ops (funnel, prospects, calls, gmail, va tasks); marketing, fin and delivery usually have NO real signal feed yet — that is a known gap in what data reaches you, not evidence those departments have nothing worth doing. ' +
-  'When you have no real signal for a department, do not simply say nothing about it: delegate a real, honest task asking that department\'s own lead to go check its own real data through its own tools — e.g. the marketing lead reviewing actual Local SEO/GBP/social/ad performance, the accounting lead pulling actual invoicing/revenue/margin data, the delivery lead checking actual walkthrough/proposal/onboarding/retention status. Asking a department to go get the truth is never fabrication. ' +
+  'The signals below are strongest for sales/emails/ops (funnel, prospects, calls, gmail, va tasks); marketing and delivery can be asked to verify their own real source when necessary. Finance is intentionally out of scope until the Director connects a verified finance source: always list fin in noAction with that reason and never create a finance task merely to fill coverage. ' +
+  'When you have no real signal for marketing or delivery, do not simply say nothing about it: delegate a real, honest task asking that department\'s own lead to check its own real data through its own tools. Asking a department to go get the truth is never fabrication. ' +
   'Only when a department genuinely has no useful next step — even after being asked to check its own real data, or because it already has open work in flight — list it in "noAction" with one honest sentence why. Never simply omit a department from both "delegations" and "noAction."';
+
+const RECOVERY_OPERATING_RULE = 'Treat office.failedTasks as a live recovery queue, not completed work. For each recent failed Office task, either create one internal diagnosis/recovery delegation with a stable dedupeKey, or state an honest noAction reason when the failure is already covered by an open initiative. Use views.aiSalesPipeline as the current source for pipeline stage and VA ownership; do not infer staff capacity beyond those verified fields.';
 
 // 2026-09-19: verified by reading serve.mjs that the immediate-run path every CEO delegation
 // uses (POST /api/tasks then POST /api/tasks/:id/run) executes straight through to 'done' with
@@ -53,11 +92,11 @@ export function buildCeoPrompt({ signals, ceoState, openInitiatives, businessNam
   const system = `You are the RESET AI CEO for ${businessName}, accountable to NAV as Director. ` +
     'You delegate to 6 department leads (elead=emails, lexi=sales, mlead=marketing, olead=ops, alead=fin, dlead=delivery) who run 35 specialist workers; you never do specialist work yourself. ' +
     'You are creating tasks exactly as if the Director typed them into the office\'s command bar — you never approve, execute, or bypass anything outbound yourself, and nothing you write should imply an outbound action has already happened. ' +
-    DEPARTMENT_COVERAGE + ' ' + TARGETING_PRIORITY + ' ' + ACTION_CLASSIFICATION + ' ' + ANTI_FABRICATION + ' Return ONLY a JSON object — no prose, no code fences.';
+    DEPARTMENT_COVERAGE + ' ' + RECOVERY_OPERATING_RULE + ' ' + TARGETING_PRIORITY + ' ' + ACTION_CLASSIFICATION + ' ' + ANTI_FABRICATION + ' ' + REPLY_OUTCOME_GUIDANCE + ' ' + OLD_SYSTEM_GUIDANCE + ' Return ONLY a JSON object — no prose, no code fences.';
   const user = `CYCLE STATE\ncyclesRun: ${ceoState.cyclesRun}\nlastMorningCycleDateLocal: ${ceoState.lastMorningCycleDateLocal || 'never'}\n\n` +
     `OPEN INITIATIVES ALREADY IN FLIGHT (do not duplicate these — build on or close them instead)\n${JSON.stringify(openInitiatives, null, 2)}\n\n` +
     `REAL SIGNALS (generated ${new Date(signals.generatedAtMs).toISOString()})\ngateway.reachable: ${signals.gateway.reachable}\n` +
-    `office.reachable: ${signals.office.reachable}\noffice.openTasks: ${signals.office.openTasks.length}\n\n` +
+    `office.reachable: ${signals.office.reachable}\noffice.openTasks: ${signals.office.openTasks.length}\noffice.failedTasks: ${signals.office.failedTasks.length}\n\n` +
     `views (each field is a real value or null — null means unavailable, never zero):\n${JSON.stringify(signals.views, null, 2)}\n\n` +
     'Return: {"priorities":[{"headline":"...","evidence":"...","severity":"info|attention|action-needed"}],' +
     '"delegations":[{"dept":"emails|sales|marketing|ops|fin|delivery","text":"the exact task to hand a department, written as the Director would say it","dedupeKey":"dept:short-stable-slug","hypothesis":"why this matters commercially","evidence":"what real signal supports this","owner":"lead id","nextAction":"what happens after this task completes","expectedBenefit":"one sentence, no invented numbers","actionClass":"internal|routine-outbound|first-contact-or-committing","needsOkHint":true|false,"complexity":"fast|reasoning|strongest"}],' +

@@ -23,11 +23,11 @@ function safeKey(s) { return String(s || '').replace(/[^a-z0-9_-]/gi, ''); }
 // can never disagree. Marketing/finance show 'NO DATA' because Reset genuinely has no
 // authoritative source for them today (see reset-bridge.mjs's buildResetStatus).
 const BB_ROWS = profileRows() || {
-  emails: [['EMAILS SENT', () => metric('emails', 'EMAILS_SENT')], ['GMAIL SIGNALS', () => metric('emails', 'GMAIL_SIGNALS')]],
+  emails: [['EMAILS SENT TODAY', () => metric('emails', 'EMAILS_SENT_TODAY')], ['GMAIL SIGNALS', () => metric('emails', 'GMAIL_SIGNALS')]],
   delivery: [['AGENT RUNS', () => metric('delivery', 'AGENT_RUNS')], ['ESCALATED', () => metric('delivery', 'ESCALATED')]],
-  sales: [['CANDIDATES VETTED', () => metric('sales', 'CANDIDATES_VETTED')], ['QUALIFIED', () => metric('sales', 'QUALIFIED')]],
+  sales: [['VETTED TODAY', () => metric('sales', 'CANDIDATES_VETTED_TODAY')], ['QUALIFIED TODAY', () => metric('sales', 'QUALIFIED_TODAY')]],
   marketing: [['NEW INSIGHTS', () => '—'], ['MARKETING DATA', () => 'NO DATA']],
-  ops: [['PROPOSALS MADE', () => metric('ops', 'PROPOSALS_MADE')], ['RECENT CALLS', () => metric('ops', 'RECENT_CALLS')]],
+  ops: [['PROPOSALS MADE', () => metric('ops', 'PROPOSALS_MADE')], ['CALL OUTCOMES TODAY', () => metric('ops', 'CALL_OUTCOMES_TODAY')]],
   fin: [['INVOICES ISSUED', () => '—'], ['REVENUE', () => 'NO DATA']],
 };
 
@@ -140,12 +140,12 @@ function renderProgress() {
 function renderPipeline() {
   const el = document.querySelector('#dvPipeline .dv-body');
   if (!el) return;
-  const vetted = metric('sales', 'CANDIDATES_VETTED'), qualified = metric('sales', 'QUALIFIED');
+  const vetted = metric('sales', 'CANDIDATES_VETTED_TODAY'), qualified = metric('sales', 'QUALIFIED_TODAY');
   const meta = RESET.meta || {};
   el.innerHTML = `
     <div class="dv-stat-row">
-      <div class="dv-stat"><b>${esc(String(vetted))}</b><span>CANDIDATES VETTED</span></div>
-      <div class="dv-stat"><b>${esc(String(qualified))}</b><span>QUALIFIED</span></div>
+      <div class="dv-stat"><b>${esc(String(vetted))}</b><span>VETTED TODAY</span></div>
+      <div class="dv-stat"><b>${esc(String(qualified))}</b><span>QUALIFIED TODAY</span></div>
     </div>
     <div class="dv-health-row"><span>Agent runs (all depts)</span><span>${meta.agentRunsTotal ?? '—'}</span></div>
     <div class="dv-health-row"><span>Reset items needing review</span><span>${meta.needsApproval ?? '—'}</span></div>

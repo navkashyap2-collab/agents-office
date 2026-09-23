@@ -361,7 +361,10 @@ export function initTasks(ctx) {
     P_.ddName.textContent = DEPTS[k].short;
     P_.ddDot.style.background = DEPTS[k].chip;
     B_.dept.textContent = DEPTS[k].name.toUpperCase(); B_.dot.style.background = DEPTS[k].chip;
-    P_.input.placeholder = `Type a task for ${DEPTS[k].name.toLowerCase()}…`;
+    // Shortened 20 Sep 2026: was `Type a task for ${dept}…`, but the department is already
+    // named right next to this in the dropdown button, and the longer text wrapped to two
+    // lines at the narrower panel width, inflating the box's empty-state height.
+    P_.input.placeholder = 'Type a task…';
     updateHint();
   }
   // routing: keywords → the right agent in the chosen dept; fallback = the dept lead (or first agent)
@@ -560,7 +563,12 @@ export function initTasks(ctx) {
     try { const u = await fetch(API + '/usage' + (force ? '?refresh=1' : '')).then(r => r.json()); if (onUsage) onUsage(u); } catch {}
   }
   async function poll() {
-    if (!live || polling) return; polling = true;
+    // Real profiling finding (20 Sep 2026): this fired every 6s forever, including while
+    // the tab sat backgrounded all day (the expected usage pattern for an always-open ops
+    // dashboard) -- ~29,000 wasted requests/day for a page nobody was looking at. The
+    // visibilitychange listener below (near setInterval(poll, 6000)) polls once
+    // immediately on return so nothing looks stale when you switch back.
+    if (!live || polling || document.hidden) return; polling = true;
     if (usageDue || ++pollN % 5 === 0) { usageDue = false; pollUsage(); }
     try {
       const [rl, tl] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json())]);
@@ -696,6 +704,7 @@ export function initTasks(ctx) {
       dirty = true;
       if (onLive) onLive(h);
       await poll(); setInterval(poll, 6000); // V3.5: routines fire on the server's clock — the page keeps up
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); }); // catch up immediately on return, see poll()'s own guard
     } catch (e) { console.warn('office server not reachable — running offline:', e.message); }
   }
   connect();

@@ -11,14 +11,18 @@ import {
 } from './builders.js';
 import { initMcp } from './mcp.js';
 import { RESET, metric as resetMetric } from './reset-status.js'; // RESET INTEGRATION: real Reset Commercial Cleaning data
+import { initDailyWork } from './daily-work.js'; // daily completed work, distinct from sales/email outcome metrics
 import { CEO, toggleCeoPanel, isCeoPanelOpen, closeCeoPanel, hasUnreadCeoBriefing } from './ceo-panel.js'; // RESET AI CEO: the briefing panel (R)
+import { toggleConnectorsPanel, isConnectorsPanelOpen, closeConnectorsPanel } from './connectors-panel.js'; // RESET INTEGRATION: connector health panel
 import './director.js'; // V3.8: Director Overview — an optional preview dashboard, wires its own OFFICE/DIRECTOR switch and reads CEO/RESET below; touches nothing else in this file
 import { loadConnectors } from './connectors.js';
 import { initTasks } from './tasks.js';
 import { initBrain } from './brain.js';
 import { initHero, HERO } from './hero.js';
-if (HERO) document.body.classList.add('hero'); // the website hero: no Sahni.ai mark or licence line on top of the page that already carries them // sahni.ai/custom hero mode (16 Sep 2026): opt-in via window.HERO, no-op otherwise
+if (HERO) document.body.classList.add('hero'); // hero mode (16 Sep 2026): opt-in via window.HERO, no-op otherwise
 let tasks = null; // V3 task boards — initialised after the rail constants exist
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initDailyWork, { once: true });
+else initDailyWork();
 
 /* ---------- renderer / scene / camera ---------- */
 const canvas = document.getElementById('scene');
@@ -46,7 +50,7 @@ const CAM_DIST = 220;
 const OVERVIEW = { base: [-9, 0, -9], zoom: 0.8 }; // (-9,-9) shifts the scene straight DOWN the screen, no sideways drift
 const SR_ = new THREE.Vector3(1, 0, -1).normalize();
 function overviewPos() {
-  const pw = (tasks ? tasks.panelWidth() : 400) + 40; // responsive fix: matches the badge clamp's clearance below so the overview centres with real breathing room, not a hairline gap, at 1366px-wide desktops
+  const pw = (tasks ? tasks.panelWidth() : 340) + 40; // responsive fix: matches the badge clamp's clearance below so the overview centres with real breathing room, not a hairline gap, at 1366px-wide desktops
   const ppw = OVERVIEW.zoom * innerHeight / (2 * FR);
   const sh = (pw / 2) / ppw;
   return [OVERVIEW.base[0] + SR_.x * sh, 0, OVERVIEW.base[2] + SR_.z * sh];
@@ -341,20 +345,20 @@ let brainNotes = brain.state.notes;
 // buildResetStatus() in serve.mjs for exactly what each field is and where it comes from.
 const BB_ROWS = profileRows() || {
   emails: [
-    ['EMAILS SENT', () => resetMetric('emails', 'EMAILS_SENT')],
+    ['EMAILS SENT TODAY', () => resetMetric('emails', 'EMAILS_SENT_TODAY')],
     ['GMAIL SIGNALS', () => resetMetric('emails', 'GMAIL_SIGNALS')]],
   delivery: [
     ['AGENT RUNS', () => resetMetric('delivery', 'AGENT_RUNS')],
     ['ESCALATED', () => resetMetric('delivery', 'ESCALATED')]],
   sales: [
-    ['CANDIDATES VETTED', () => resetMetric('sales', 'CANDIDATES_VETTED')],
-    ['QUALIFIED', () => resetMetric('sales', 'QUALIFIED')]],
+    ['VETTED TODAY', () => resetMetric('sales', 'CANDIDATES_VETTED_TODAY')],
+    ['QUALIFIED TODAY', () => resetMetric('sales', 'QUALIFIED_TODAY')]],
   marketing: [
     ['SC CLICKS (28D)', () => resetMetric('marketing', 'SEARCH_CONSOLE_CLICKS')],
     ['SC IMPRESSIONS', () => resetMetric('marketing', 'SEARCH_CONSOLE_IMPRESSIONS')]],
   ops: [
     ['PROPOSALS MADE', () => resetMetric('ops', 'PROPOSALS_MADE')],
-    ['RECENT CALLS', () => resetMetric('ops', 'RECENT_CALLS')]],
+    ['CALL OUTCOMES TODAY', () => resetMetric('ops', 'CALL_OUTCOMES_TODAY')]],
   fin: [
     ['INVOICES ISSUED', () => '—'],
     ['REVENUE', () => 'NO DATA']],
@@ -527,7 +531,7 @@ addEventListener('pointerup', (e) => {
 });
 addEventListener('keydown', (e) => {
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return; // typing in the bar, the big editor or a menu never fires a hotkey
-  if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (isCeoPanelOpen()) closeCeoPanel(); else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
+  if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (isCeoPanelOpen()) closeCeoPanel(); else if (isConnectorsPanelOpen()) closeConnectorsPanel(); else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
   else if (e.key === 'p' || e.key === 'P') { if (tasks && tasks.calendar) tasks.calendar.toggle(); } // V3.2.1 (16 Sep 2026): the calendar
   else if (tasks && tasks.calendar && tasks.calendar.isOpen()) return; // the calendar has its own keys (← → W M T)
   else if (e.key === 'g' || e.key === 'G') brain.toggle(); // V3.6: the full-screen Brain graph
@@ -684,7 +688,7 @@ function renderActivity(id) {
 /* camera target offset so the pod sits beside the rail, not behind it */
 function focusTarget(k, atPos) {
   const base = atPos ? [atPos.x, 0, atPos.z] : [LAYOUT[k].pos[0], 0, LAYOUT[k].pos[1] + 1];
-  const boardW = (tasks ? tasks.panelWidth() : 400) + 30; // V3.3: the task panel is always on the right
+  const boardW = (tasks ? tasks.panelWidth() : 340) + 30; // V3.3: the task panel is always on the right
   const zoom = atPos ? 3.3 : 2.5;
   const pxPerWorld = zoom * innerHeight / (2 * FR);
   const railW = Math.min(400, innerWidth * 0.92);
@@ -721,7 +725,7 @@ function enterFocus(k, pendingAgentId) {
   buildDeptRail(k);
   rail.className = RAIL_SIDE[k];
   rail.style.display = 'block';
-  document.body.classList.toggle('railLeft', RAIL_SIDE[k] === 'left'); // the Sahni.ai mark steps right of a docked-left rail
+  document.body.classList.toggle('railLeft', RAIL_SIDE[k] === 'left');
   // V3.4: the rail IS the chat — it opens on the department lead (or first agent) at once
   // (after the className reset above, which would otherwise drop the agentOpen state)
   const first = pendingAgentId || (AGENTS.find(x => x.dept === k && x.lead) || AGENTS.find(x => x.dept === k)).id;
@@ -1037,6 +1041,7 @@ function zoomToApproval(dept) {
 }
 document.getElementById('topCal').addEventListener('click', () => { if (tasks && tasks.calendar) tasks.calendar.toggle(); }); // V3.2.1: the top-bar calendar button (same as P)
 document.getElementById('ceoStatus').addEventListener('click', toggleCeoPanel); // RESET AI CEO: the top-bar badge doubles as a button (same as R)
+document.getElementById('resetStatus').addEventListener('click', toggleConnectorsPanel); // RESET INTEGRATION: the top-bar badge doubles as a button, opening the connector health panel
 document.getElementById('topAppr').addEventListener('click', () => {
   const s = Object.values(R).find(r => r.state === 'stuck');
   if (s) zoomToApproval(s.a.dept);
@@ -1133,8 +1138,22 @@ function walkStep(r, dt) {
 // desk-life variety: each agent cycles through work modes on its own clock
 // no 'stretch' — AJ found the stand-up stretches annoying (1 Aug). Last entry = pick fallback.
 const WORK_MODES = [
-  ['type', 0.30, 4000, 7500], ['read', 0.18, 3500, 6500], ['phone', 0.16, 4000, 8000],
-  ['glance', 0.17, 2000, 3500], ['sip', 0.11, 2500, 4000], ['spin', 0.08, 1400, 2000],
+  ['type', 0.24, 4000, 7500], ['read', 0.15, 3500, 6500], ['phone', 0.16, 4000, 8000],
+  ['glance', 0.15, 2000, 3500], ['sip', 0.10, 2500, 4000], ['spin', 0.08, 1400, 2000],
+  // 'stretch' (stand up beside the desk, arms in a wide V) was fully built -- pose AND
+  // seat-to-stand position lerp -- but never reachable during ordinary work, only via the
+  // rare approval-cheer/stuck-wave paths. Added into the regular rotation 20 Sep 2026 so
+  // the office reads as more alive: real periodic standing/position movement, not just
+  // seated arm/head motion.
+  ['stretch', 0.12, 3000, 5000],
+];
+// Idle-only rotation (21 Sep 2026) -- a genuinely idle desk (no real task) never gets the
+// work-implying poses above (type/read/phone/glance/spin), only ambient office-life
+// breaks. 'idle' itself carries most of the weight with a long dwell time specifically so
+// the room reads as calm most of the time -- see the population-density note where this
+// is used in tickSim.
+const IDLE_MODES = [
+  ['idle', 0.70, 15000, 35000], ['sip', 0.10, 2500, 4500], ['snack', 0.08, 3000, 5500], ['stretch', 0.12, 3000, 5000],
 ];
 function pickWorkMode(r, now) {
   let x = Math.random();
@@ -1224,9 +1243,30 @@ function tickSim(now, dt) {
       poseWork(r.person, mode, now + r.bob * 500, dt);
       applyStandAndFacing(r, mode, now, dt);
     } else if (r.state === 'idle') {
-      // RESET INTEGRATION: no real task attached to this desk right now — a plain
-      // standing pose, no typing/emote animation implying work that isn't happening.
-      posePerson(r.person, 'stand', now);
+      // RESET INTEGRATION: no real task attached to this desk right now — never the
+      // work-implying poses (type/phone/read; that desk's own monitor already honestly
+      // shows "○ idle", so a typing motion would visually contradict it). Real ambient
+      // office-life movement instead: mostly a relaxed seated sway, with occasional real
+      // breaks (coffee, a snack, standing up to stretch) -- these don't imply fabricated
+      // work, so they're fair game.
+      // Tuned 21 Sep 2026: the first version picked a fresh idle activity too often --
+      // with 35 independently-timed agents, several were always mid-stretch at once,
+      // reading as constant motion instead of occasional. IDLE_MODES below gives 'idle'
+      // itself a long dwell time (70% weight, 15-35s) so the office is calm most of the
+      // time, with short, rare breaks into something else.
+      if (!r.idleModeUntil || now > r.idleModeUntil) {
+        let x = Math.random();
+        for (const [mode, w, dMin, dMax] of IDLE_MODES) {
+          x -= w;
+          if (x <= 0 || mode === IDLE_MODES[IDLE_MODES.length - 1][0]) {
+            r.idleMode = mode;
+            r.idleModeUntil = now + dMin + Math.random() * (dMax - dMin);
+            break;
+          }
+        }
+      }
+      poseWork(r.person, r.idleMode || 'idle', now, dt);
+      applyStandAndFacing(r, r.idleMode || 'idle', now, dt);
     } else if (r.state === 'walking' || r.state === 'returning') {
       posePerson(r.person, 'walk', now);
       if (walkStep(r, dt)) {
@@ -1374,12 +1414,12 @@ function tickLOD() {
     const bh = box.h * badgeScale, bw = box.w * badgeScale;
     let xf;
     if (d.sideBadge) { // anchored by an edge, vertically centred (emails/sales/fin/delivery)
-      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 40); // V3.3: never under the panel — 40 (not 18px worth) so the gap reads as intentional, not a graze, at 1366px-wide desktops
+      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 340) + 40); // V3.3: never under the panel — 40 (not 18px worth) so the gap reads as intentional, not a graze, at 1366px-wide desktops
       sy = clamp(sy, 64 + bh / 2, innerHeight - bh / 2 - 8);
       if (d.sideLeft) { sx = clamp(sx, bw + 8, rightEdge); xf = 'translate(-100%,-50%)'; }
       else { sx = clamp(sx, 8, rightEdge - bw); xf = 'translate(0,-50%)'; }
     } else {
-      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 40);
+      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 340) + 40);
       sy = clamp(sy, bh + 64, innerHeight - 12);
       sx = clamp(sx, bw / 2 + 8, rightEdge - bw / 2);
       xf = 'translate(-50%,-100%)';
@@ -1411,9 +1451,9 @@ function tickResetStatus() {
   el.className = 'tc-lab rs-' + RESET.state;
   const age = RESET.fetchedAtMs ? Math.round((Date.now() - RESET.fetchedAtMs) / 1000) : null;
   el.querySelector('.rs-text').textContent = 'RESET ' + label + (RESET.state === 'stale' && age !== null ? ` (${age}s old)` : '');
-  el.title = RESET.state === 'ok' ? 'Reset Command Centre bridge — live'
+  el.title = (RESET.state === 'ok' ? 'Reset Command Centre bridge — live'
     : RESET.state === 'stale' ? `Reset Command Centre unreachable right now — showing last-known values from ${age}s ago. Reason: ${RESET.reason}`
-    : `Reset Command Centre unavailable — no data. Reason: ${RESET.reason}`;
+    : `Reset Command Centre unavailable — no data. Reason: ${RESET.reason}`) + ' (click for connector details)';
   // RESET INTEGRATION: updateBillboards() used to be driven entirely by the now-disabled
   // fake fireAgentEvent() ticker — without this call the real numbers in RESET never
   // reach the department cards even though the data itself is correctly fetched.
@@ -1514,6 +1554,7 @@ window.CC = { hero, flyTo, zoomToDept, zoomOut, zoomToApproval, requestApproval,
   toggleBoard: () => tasks.toggle(), addTask: (agentId, title) => tasks.addTask(agentId, title), tasks, routines: () => tasks.routines };
 
 let last = performance.now();
+let rafHandle = null;
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   tickTween(now);
@@ -1526,6 +1567,24 @@ function loop(now) {
   mcp.tick(now, dt, view, camera, focused, focusDim);
   syncOverviewBtn();
   renderer.render(scene, camera);
-  requestAnimationFrame(loop);
+  rafHandle = requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+// Real profiling finding (20 Sep 2026): this render loop ran unconditionally forever,
+// drawing the full 3D scene every frame even while the tab sat backgrounded all day (the
+// expected real usage pattern for an always-open ops dashboard). Explicitly stopping the
+// loop on visibilitychange (rather than relying on the browser's own rAF throttling of
+// hidden tabs, which still ticks at a reduced rate) removes that cost entirely, and
+// resets `last` on resume so the first frame back doesn't see a huge stale dt.
+function startLoop() { if (rafHandle === null) rafHandle = requestAnimationFrame(loop); }
+function stopLoop() { if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; } }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopLoop();
+  else { last = performance.now(); startLoop(); }
+});
+// Real regression found 20 September 2026: gating this first call on `if
+// (!document.hidden)` looked safe, but document.hidden is not reliably settled this early
+// in a page's life -- if it misreads true even once here, the loop never starts, and
+// since the tab was never truly hidden, no later visibilitychange event ever fires to
+// recover it. Always start unconditionally; the visibilitychange listener above still
+// stops it correctly once the page is actually running and a real transition occurs.
+startLoop();
