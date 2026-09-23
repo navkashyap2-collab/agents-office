@@ -15,13 +15,10 @@ export async function testReachable() {
   const fetchImpl = recordingFetch({
     '/health': { status: 200, body: { status: 'ok' } },
     '/view/ceo-priorities': { status: 200, body: { view: 'ceo-priorities', data: [{ id: 'x', severity: 'info', headline: 'h', evidence: 'e' }] } },
-    '/view/funnel': { status: 200, body: { view: 'funnel', data: [{ stage: 'Sent', count: 2, prospectKeys: [] }] } },
     '/view/agent-runs': { status: 200, body: { view: 'agent-runs', data: { recent: [], health: [] } } },
     '/view/system-health': { status: 200, body: { view: 'system-health', data: { cronAlive: 'UNKNOWN', ingestionErrors24h: 0 } } },
-    '/view/prospects': { status: 200, body: { view: 'prospects', data: { byStatus: {}, recent: [] } } },
     '/view/suppression': { status: 200, body: { view: 'suppression', data: [] } },
     '/view/outbox': { status: 200, body: { view: 'outbox', data: [] } },
-    '/view/va-tasks': { status: 200, body: { view: 'va-tasks', data: { assignmentCounts: [], performance: [] } } },
     '/view/calls': { status: 200, body: { view: 'calls', data: { recentCalls: [], callCountsByVa: [] } } },
     '/view/gmail-signals': { status: 200, body: { view: 'gmail-signals', data: { signalCounts: {}, recentSignals: [], killSwitch: { state: 'off' } } } },
     '/prod/search-console/query': { status: 200, body: { data: { startDate: '2026-08-22', endDate: '2026-09-16', dimensions: ['query'], rows: [{ keys: ['commercial cleaning perth'], clicks: 12, impressions: 340, ctr: 0.0353, position: 8.2 }] }, runId: 'r1' } },
@@ -40,7 +37,11 @@ export async function testReachable() {
   assert.equal(out.views.searchConsole.rows[0].keys[0], 'commercial cleaning perth');
   assert.equal(out.views.businessProfile.series[0].points[0].value, 4);
   assert.equal(out.views.aiSalesPipeline.rows[0].businessName, 'Contour Interiors Perth');
+  assert.ok(!('funnel' in out.views), 'the retired Sales Control funnel view must never be fetched, not merely ignored');
+  assert.ok(!('prospects' in out.views), 'the retired Sales Control prospects view must never be fetched, not merely ignored');
+  assert.ok(!('vaTasks' in out.views), 'the retired Sales Control va-tasks view must never be fetched, not merely ignored');
   assert.ok(recordedUrls.some(url => url.startsWith('http://127.0.0.1:4520/api/')), 'the default Office URL must use the configured service port');
+  assert.ok(!recordedUrls.some(url => /\/view\/(funnel|prospects|va-tasks)$/.test(url)), 'the retired board views must never even be requested from the gateway');
   console.log('ok: gatherSignals reachable case');
 }
 
@@ -49,7 +50,6 @@ export async function testGatewayDown() {
   const out = await gatherSignals({ fetchImpl });
   assert.equal(out.gateway.reachable, false);
   assert.equal(out.views.ceoPriorities, null);
-  assert.equal(out.views.funnel, null);
   assert.equal(out.views.searchConsole, null);
   assert.equal(out.views.businessProfile, null);
   assert.equal(out.views.aiSalesPipeline, null);

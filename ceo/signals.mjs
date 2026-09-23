@@ -2,10 +2,17 @@
 // real value from the gateway/office, or null — never a guessed/zero default. A
 // null view means "no verified source right now," which callers (reason.mjs) must
 // surface as a genuine data gap, not silently treat as "nothing is happening."
+// funnel/prospects/va-tasks are deliberately absent: they are built entirely from the
+// OLD, retired Reset Sales Control board and the Wave1 pilot (see readModel.ts's
+// buildFunnel(wave1)), which stopped receiving new prospects days ago. Naming them here
+// used to hand the CEO stale sales-pipeline data every single cycle regardless of what any
+// prompt guidance said; the guarantee that it can never happen again is that the CEO simply
+// never receives these views at all. aiSalesPipeline (fetched below) is the sole current
+// source of truth for sales-pipeline priorities and delegations.
 const VIEWS = {
-  ceoPriorities: 'ceo-priorities', funnel: 'funnel', agentRuns: 'agent-runs',
-  systemHealth: 'system-health', prospects: 'prospects', suppression: 'suppression',
-  outbox: 'outbox', vaTasks: 'va-tasks', calls: 'calls', gmailSignals: 'gmail-signals',
+  ceoPriorities: 'ceo-priorities', agentRuns: 'agent-runs',
+  systemHealth: 'system-health', suppression: 'suppression',
+  outbox: 'outbox', calls: 'calls', gmailSignals: 'gmail-signals',
 };
 
 async function safeJson(fetchImpl, url) {

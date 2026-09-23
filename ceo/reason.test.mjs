@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { buildCeoPrompt, parseCeoResponse, runCeoReasoning, reasonWithEscalation } from './reason.mjs';
 
-const baseSignals = { generatedAtMs: 1, gateway: { reachable: true, health: {}, reason: null }, views: { ceoPriorities: [], funnel: [], agentRuns: null, systemHealth: null, prospects: null, suppression: null, outbox: null, vaTasks: null, calls: null, gmailSignals: null }, office: { reachable: true, health: {}, openTasks: [], recentDone: [], failedTasks: [] } };
+const baseSignals = { generatedAtMs: 1, gateway: { reachable: true, health: {}, reason: null }, views: { ceoPriorities: [], agentRuns: null, systemHealth: null, suppression: null, outbox: null, calls: null, gmailSignals: null, aiSalesPipeline: null }, office: { reachable: true, health: {}, openTasks: [], recentDone: [], failedTasks: [] } };
 
 export async function testBuildPromptMentionsNoFabrication() {
   const { system, user } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
@@ -51,16 +51,18 @@ export async function testBuildPromptExplainsReplyOutcomeSignal() {
 
 export async function testBuildPromptExplainsOldVsNewPipelineSources() {
   // 2026-09-21: the director directly reported the CEO kept re-flagging the same stale
-  // items (an old phone-first call queue) for days. Root cause: views.funnel/prospects/
-  // vaTasks are built entirely from the OLD, retired Reset Sales Control board and never
-  // see the current AI Sales Pipeline board at all. The prompt must say so explicitly and
-  // point at views.aiSalesPipeline as the one current source of truth, and must also stop
-  // discovery_promotion_job's stale D1 row from being read as a live incident.
-  const { system } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
-  assert.match(system, /funnel.*retired|retired.*funnel/is);
+  // items (an old phone-first call queue) for days. Root cause: the old funnel/prospects/
+  // vaTasks views were built entirely from the OLD, retired Reset Sales Control board and
+  // never saw the current AI Sales Pipeline board at all. The 2026-09-21 fix only told the
+  // model to ignore those views; hardened 2026-09-23: signals.mjs no longer fetches them at
+  // all, so this test asserts the mechanical guarantee (the retired views are structurally
+  // absent from what the model receives), not just a prompt instruction to disregard them.
+  const { system, user } = buildCeoPrompt({ signals: baseSignals, ceoState: { cyclesRun: 0 }, openInitiatives: [] });
   assert.match(system, /aiSalesPipeline/);
+  assert.match(system, /retired/i);
   assert.match(system, /discovery_promotion_job/);
-  console.log('ok: buildCeoPrompt marks the old board views historical-only and aiSalesPipeline as the current source of truth');
+  assert.doesNotMatch(user, /"funnel"|"prospects"|"vaTasks"/, 'the retired board views must never reach the CEO prompt at all, not merely be flagged as historical');
+  console.log('ok: buildCeoPrompt receives no retired-board views at all and points solely at aiSalesPipeline');
 }
 
 export async function testBuildPromptDirectsRecoveryOfFailedWorkAndLeavesFinanceAlone() {

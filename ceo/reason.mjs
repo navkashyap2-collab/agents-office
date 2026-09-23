@@ -28,23 +28,25 @@ const REPLY_OUTCOME_GUIDANCE = 'Every outbox row includes replyOutcome (\'positi
   '\'positive\' deserves a priority only if nothing in the signals shows it was already acted on. ' +
   'Only \'ambiguous\', \'unreadable\', or null (no outcome recorded despite a reply) may genuinely need a human to look — and even then, say plainly what the gap is (e.g. "reply received but not yet classified"), never imply it was never looked at when replyOutcome shows otherwise.';
 
-// 2026-09-21 fix: the director directly reported that this cycle keeps re-flagging the
-// same dead-end items for days on end -- confirmed live: views.funnel is built entirely
-// from the OLD, retired Reset Sales Control board / Wave1 pilot (see
-// command-centre/server/readModel.ts's buildFunnel(wave1) -- it never receives any AI
-// Sales Pipeline data at all), so every "phone-first queue" / "qualified, none promoted"
-// priority this cycle produced from it was about a system this business no longer runs
-// new prospects through. Same for views.prospects and views.vaTasks -- both are old-board
-// artifacts. views.systemHealth.jobStates also still lists discovery_promotion_job as
-// 'running', which is not a live incident: that job was intentionally retired when the AI
-// Sales Pipeline board replaced it as the sole destination for new prospects (see
-// src/index.ts's own comment on this) and its stale D1 row is a known, harmless leftover,
-// never something needing action. views.aiSalesPipeline (added this cycle) is the real,
-// live read of the current board (5031414133) and is now the only current source of truth
-// for sales pipeline priorities and delegations.
-const OLD_SYSTEM_GUIDANCE = 'views.funnel, views.prospects and views.vaTasks all come from the OLD, retired Reset Sales Control board and the Wave1 pilot -- that system no longer receives new prospects and has not for days. ' +
-  'Treat everything in those three views as historical record only: never generate a new priority, risk or delegation about a prospect, queue or task-type that appears only there (e.g. an old phone-first call queue, an old qualified-but-not-promoted count). ' +
-  'views.aiSalesPipeline is the current, live Reset AI Sales Pipeline board (5031414133) and is the ONLY source of truth for what today\'s real sales pipeline looks like -- base every sales-pipeline priority and delegation on it instead. ' +
+// 2026-09-21 fix, hardened 2026-09-23: the director directly reported that this cycle
+// keeps re-flagging the same dead-end items for days on end -- confirmed live: the old
+// funnel/prospects/vaTasks views were built entirely from the OLD, retired Reset Sales
+// Control board / Wave1 pilot (see command-centre/server/readModel.ts's
+// buildFunnel(wave1) -- it never received any AI Sales Pipeline data at all), so every
+// "phone-first queue" / "qualified, none promoted" priority this cycle produced from them
+// was about a system this business no longer runs new prospects through. The 2026-09-21
+// fix relied on telling the model to treat those views as historical-only, which only
+// works if the model reliably follows that instruction every cycle; as of 2026-09-23,
+// signals.mjs no longer fetches funnel/prospects/vaTasks at all, so there is nothing left
+// for the CEO to misread even if this guidance were ignored -- the mechanical guarantee is
+// in what data reaches the model, not in what it's told to do with it. This guidance now
+// only needs to point the model at the real source. views.systemHealth.jobStates may still
+// list discovery_promotion_job as 'running', which is not a live incident: that job was
+// intentionally retired when the AI Sales Pipeline board replaced it as the sole
+// destination for new prospects (see src/index.ts's own comment on this) and its stale D1
+// row is a known, harmless leftover, never something needing action.
+const OLD_SYSTEM_GUIDANCE = 'views.aiSalesPipeline is the current, live Reset AI Sales Pipeline board (5031414133) and is the ONLY source of truth for what today\'s real sales pipeline looks like -- base every sales-pipeline priority and delegation on it. ' +
+  'The old Reset Sales Control board and Wave1 pilot (phone-first call queues, qualified-but-not-promoted counts, etc.) are retired and deliberately not included anywhere in these signals -- never reconstruct or reference them from memory or from office.recentDone/failedTasks history. ' +
   'Separately, if views.systemHealth.jobStates lists discovery_promotion_job, it is a known-retired job whose D1 row was never cleaned up -- never flag it as a stuck or failing job; that job is not supposed to update and its inactivity is not a problem.';
 
 // 2026-09-19 fix: the real signal views (funnel, prospects, calls, gmail, va tasks, etc.)
@@ -57,7 +59,7 @@ const OLD_SYSTEM_GUIDANCE = 'views.funnel, views.prospects and views.vaTasks all
 // cycle instead of invisible, and gives the model an honest way to still engage those three
 // departments (asking their own lead to go get real data is not fabrication).
 const DEPARTMENT_COVERAGE = 'Every cycle you must account for ALL SIX departments — emails, sales, marketing, ops, fin, delivery — not only the ones with real signal data below. ' +
-  'The signals below are strongest for sales/emails/ops (funnel, prospects, calls, gmail, va tasks); marketing and delivery can be asked to verify their own real source when necessary. Finance is intentionally out of scope until the Director connects a verified finance source: always list fin in noAction with that reason and never create a finance task merely to fill coverage. ' +
+  'The signals below are strongest for sales/emails/ops (aiSalesPipeline, calls, gmail); marketing and delivery can be asked to verify their own real source when necessary. Finance is intentionally out of scope until the Director connects a verified finance source: always list fin in noAction with that reason and never create a finance task merely to fill coverage. ' +
   'When you have no real signal for marketing or delivery, do not simply say nothing about it: delegate a real, honest task asking that department\'s own lead to check its own real data through its own tools. Asking a department to go get the truth is never fabrication. ' +
   'Only when a department genuinely has no useful next step — even after being asked to check its own real data, or because it already has open work in flight — list it in "noAction" with one honest sentence why. Never simply omit a department from both "delegations" and "noAction."';
 
