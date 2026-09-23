@@ -392,8 +392,11 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
         if (stripDept !== f) { // centre the strip and name the department it feeds
           for (const [k, img] of Object.entries(topImgs)) img.style.display = BY_DEPT[f].includes(k) ? '' : 'none';
           topconn.classList.add('focus');
-          topconn.querySelector('.tc-lab').innerHTML =
-            `<span class="dot" style="background:${DEPTS[f].chip}"></span>${DEPTS[f].short} · CONNECTED TO`;
+          // 2026-09-23 fix: seen live throwing every animation frame once the strip's
+          // initial tc-lab span was missing (e.g. reinit after the connectors list changed
+          // shape) — querySelector returning null here must never crash the whole render loop.
+          const focusedLab = topconn.querySelector('.tc-lab');
+          if (focusedLab) focusedLab.innerHTML = `<span class="dot" style="background:${DEPTS[f].chip}"></span>${DEPTS[f].short} · CONNECTED TO`;
           rectDirty = true; // the display toggles above reflow the strip — icon x-positions moved
         }
       } else {
@@ -402,7 +405,8 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
         if (stripDept !== null) {
           for (const img of Object.values(topImgs)) img.style.display = '';
           topconn.classList.remove('focus');
-          topconn.querySelector('.tc-lab').innerHTML = `<span class="dot"></span>CONNECTED TO`;
+          const overviewLab = topconn.querySelector('.tc-lab');
+          if (overviewLab) overviewLab.innerHTML = `<span class="dot"></span>CONNECTED TO`;
           rectDirty = true;
         }
       }
