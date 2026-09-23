@@ -10,17 +10,20 @@ const norm = s => String(s).toLowerCase().replace(/^claude\.ai\s+/, '').replace(
 function hue(name) { let h = 0; for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
 export const inkOf = name => `hsl(${hue(name)} 52% 42%)`;
 
-// a tile for a server we have no logo for: same white rounded square as the baked ones, the
-// name's initials in a colour hashed from the name — stable across boots
+// a tile for a server we have no baked logo for: a rounded square in a colour hashed from the
+// name (stable across boots) with its initials in white — reads as a real connector icon at a
+// glance instead of a flat placeholder, so every connector the owner might ever connect has a
+// distinct, recognisable tile in the strip, not just the handful with hand-picked artwork
 export function tile(name) {
   const c = document.createElement('canvas'); c.width = c.height = 160;
   const x = c.getContext('2d');
   const r = 34;
-  x.beginPath(); x.roundRect(1, 1, 158, 158, r); x.fillStyle = '#fff'; x.fill();
-  x.lineWidth = 2; x.strokeStyle = 'rgba(28,26,23,0.10)'; x.stroke();
+  const bg = inkOf(name);
+  x.beginPath(); x.roundRect(1, 1, 158, 158, r); x.fillStyle = bg; x.fill();
+  x.lineWidth = 2; x.strokeStyle = 'rgba(255,255,255,.22)'; x.stroke();
   const words = String(name).replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/);
   const ini = (words.length > 1 ? words[0][0] + words[1][0] : String(name).slice(0, 2)).toUpperCase();
-  x.fillStyle = inkOf(name);
+  x.fillStyle = '#fff';
   x.font = `700 ${ini.length > 1 ? 64 : 76}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
   x.textAlign = 'center'; x.textBaseline = 'middle';
   x.fillText(ini, 80, 86);

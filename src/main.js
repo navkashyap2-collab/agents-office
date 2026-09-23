@@ -10,19 +10,31 @@ import {
   makePerson, posePerson, poseWork, makePlant, makeServerRack, makeMeetingTable, makeWalkway, makeWarnSprite,
 } from './builders.js';
 import { initMcp } from './mcp.js';
+import { RESET, metric as resetMetric } from './reset-status.js'; // RESET INTEGRATION: real Reset Commercial Cleaning data
+import { initDailyWork } from './daily-work.js'; // daily completed work, distinct from sales/email outcome metrics
+import { CEO, toggleCeoPanel, isCeoPanelOpen, closeCeoPanel, hasUnreadCeoBriefing } from './ceo-panel.js'; // RESET AI CEO: the briefing panel (R)
+import { toggleConnectorsPanel, isConnectorsPanelOpen, closeConnectorsPanel } from './connectors-panel.js'; // RESET INTEGRATION: connector health panel
+import './director.js'; // V3.8: Director Overview — an optional preview dashboard, wires its own OFFICE/DIRECTOR switch and reads CEO/RESET below; touches nothing else in this file
 import { loadConnectors } from './connectors.js';
 import { initTasks } from './tasks.js';
 import { initBrain } from './brain.js';
 import { initHero, HERO } from './hero.js';
-if (HERO) document.body.classList.add('hero'); // the website hero: no Sahni.ai mark or licence line on top of the page that already carries them // sahni.ai/custom hero mode (16 Sep 2026): opt-in via window.HERO, no-op otherwise
+if (HERO) document.body.classList.add('hero'); // hero mode (16 Sep 2026): opt-in via window.HERO, no-op otherwise
 let tasks = null; // V3 task boards — initialised after the rail constants exist
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initDailyWork, { once: true });
+else initDailyWork();
 
 /* ---------- renderer / scene / camera ---------- */
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.VSMShadowMap;
+// perf fix (19 Sep): VSM shadows run a separate blur render pass over the whole 2048² shadow
+// map every single frame, on top of the shadow pass itself — real GPU cost, paid whether or
+// not the camera or anything in view has moved. PCFSoft gets comparably soft-edged shadows
+// from hardware-filtered sampling in the main shadow pass, no extra pass, at a fraction of
+// the cost — the highest-confidence, most visually-invisible win available here.
+renderer.shadowMap.type = THREE.PCFShadowMap; // this Three.js build deprecates PCFSoftShadowMap and silently substitutes this anyway
 
 const scene = new THREE.Scene();
 
@@ -38,7 +50,7 @@ const CAM_DIST = 220;
 const OVERVIEW = { base: [-9, 0, -9], zoom: 0.8 }; // (-9,-9) shifts the scene straight DOWN the screen, no sideways drift
 const SR_ = new THREE.Vector3(1, 0, -1).normalize();
 function overviewPos() {
-  const pw = (tasks ? tasks.panelWidth() : 400) + 30;
+  const pw = (tasks ? tasks.panelWidth() : 340) + 40; // responsive fix: matches the badge clamp's clearance below so the overview centres with real breathing room, not a hairline gap, at 1366px-wide desktops
   const ppw = OVERVIEW.zoom * innerHeight / (2 * FR);
   const sh = (pw / 2) / ppw;
   return [OVERVIEW.base[0] + SR_.x * sh, 0, OVERVIEW.base[2] + SR_.z * sh];
@@ -106,7 +118,7 @@ key.shadow.mapSize.set(2048, 2048);
 key.shadow.camera.left = -95; key.shadow.camera.right = 95;
 key.shadow.camera.top = 95; key.shadow.camera.bottom = -95;
 key.shadow.camera.far = 400;
-key.shadow.radius = 7; key.shadow.blurSamples = 12;
+key.shadow.radius = 7; // blurSamples removed with VSM — PCFSoft has no such param
 key.shadow.bias = -0.0004;
 scene.add(key);
 
@@ -247,7 +259,12 @@ for (const a of AGENTS) {
   R[a.id] = {
     a, person, warn, pill, seat: person.position.clone(), seatRot: ANG + Math.PI,
     stand: person.position.clone().add(rot(new THREE.Vector3(1.5, 0, 0.15))),
-    state: 'working', bob: Math.random() * 10, path: null, pathI: 0, speed: 9.5, ask: null,
+    // RESET INTEGRATION: a live, served office starts idle — a desk only becomes
+    // 'working' when tasks.js attaches a genuine live task to this agent (see
+    // apply()/toDoing() in tasks.js). The offline/file demo (no server, no CORS-safe
+    // origin to even ask) keeps its original always-busy look untouched.
+    state: location.protocol.startsWith('http') ? 'idle' : 'working',
+    bob: Math.random() * 10, path: null, pathI: 0, speed: 9.5, ask: null,
     v1: V1.find(x => x.id === a.id), feed: [],
     station, desk, screenSet, // hero mode reaches the monitor and the desk through these
   };
@@ -321,26 +338,30 @@ function tickDim(dt) {
 /* ---------- department billboards — v1's exact agreed metric rows + amber approval row ---------- */
 const kv = id => KPIS.find(k => k.id === id).val;
 let brainNotes = brain.state.notes;
+// RESET INTEGRATION: these were STATS.x/kv() demo values that drift on a Math.random()
+// walk — replaced with real Reset Commercial Cleaning data via reset-status.js, which
+// itself reads Reset Command Centre's real read-only /api/snapshot. A department with no
+// authoritative Reset source for a metric shows '—', never an invented number — see
+// buildResetStatus() in serve.mjs for exactly what each field is and where it comes from.
 const BB_ROWS = profileRows() || {
   emails: [
-    ['EMAILS SENT', () => STATS.emailsSent],
-    ['REPLIES DRAFTED', () => STATS.drafts]],
+    ['EMAILS SENT TODAY', () => resetMetric('emails', 'EMAILS_SENT_TODAY')],
+    ['GMAIL SIGNALS', () => resetMetric('emails', 'GMAIL_SIGNALS')]],
   delivery: [
-    ['REPORTS SENT', () => STATS.reports],
-    ['ON TRACK', () => STATS.onTrack + ' / ' + STATS.projects]],
+    ['AGENT RUNS', () => resetMetric('delivery', 'AGENT_RUNS')],
+    ['ESCALATED', () => resetMetric('delivery', 'ESCALATED')]],
   sales: [
-    ['CALLS S·A·J', () => STATS.spencer + '·' + STATS.arwin + '·' + STATS.jack],
-    ['NEW MANAGERS', () => STATS.managers],
-    ['AUTO-ONBOARDED', () => STATS.autoOnb]],
+    ['VETTED TODAY', () => resetMetric('sales', 'CANDIDATES_VETTED_TODAY')],
+    ['QUALIFIED TODAY', () => resetMetric('sales', 'QUALIFIED_TODAY')]],
   marketing: [
-    ['NEW INSIGHTS', () => STATS.insMkt],
-    ['COST PER USER', () => '$' + Math.round(STATS.cpa)]],
+    ['SC CLICKS (28D)', () => resetMetric('marketing', 'SEARCH_CONSOLE_CLICKS')],
+    ['SC IMPRESSIONS', () => resetMetric('marketing', 'SEARCH_CONSOLE_IMPRESSIONS')]],
   ops: [
-    ['PROPOSALS MADE', () => Math.round(kv('proposals'))],
-    ['NEW INSIGHTS', () => STATS.insOps]],
+    ['PROPOSALS MADE', () => resetMetric('ops', 'PROPOSALS_MADE')],
+    ['CALL OUTCOMES TODAY', () => resetMetric('ops', 'CALL_OUTCOMES_TODAY')]],
   fin: [
-    ['INVOICES ISSUED', () => Math.round(kv('invoices'))],
-    ['BILLS PAID', () => STATS.billsPaid]],
+    ['INVOICES ISSUED', () => '—'],
+    ['REVENUE', () => 'NO DATA']],
   brain: [
     ['NOTES INDEXED', () => brainNotes.toLocaleString('en-NZ')]],
 };
@@ -403,6 +424,7 @@ function updateBillboards() {
         if (!el) return; // the brain tag carries no metric rows
         el.textContent = nv;
         el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+        badgeRectDirty = true; // the badge's box may have reflowed with this new text
         const rel = document.querySelector(`[data-rm="${k}-${i}"]`); // docked rail copy
         if (rel) {
           rel.textContent = nv;
@@ -441,7 +463,16 @@ function worldAt(nx, ny) {
 let focused = null; // dept key when zoomed into a dept
 
 addEventListener('wheel', (e) => {
-  if (e.target.closest && e.target.closest('#rail')) return; // let the rail scroll
+  // fix (19 Sep): only #rail was ever excluded here, so scrolling over any OTHER panel with
+  // real content — Task Status, the CEO panel, the company board, the calendar, the Brain
+  // graph, Director Overview — got hijacked into zooming the 3D scene instead of scrolling
+  // that panel. Walk up from the actual target: the first genuinely scrollable ancestor (has
+  // overflow-y set AND more content than it can show) keeps its native wheel scroll; only
+  // wheeling over the scene itself reaches the zoom below.
+  for (let el = e.target; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) return;
+  }
   e.preventDefault();
   tween = null;
   view.arc = 0;
@@ -500,11 +531,12 @@ addEventListener('pointerup', (e) => {
 });
 addEventListener('keydown', (e) => {
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return; // typing in the bar, the big editor or a menu never fires a hotkey
-  if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
+  if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (isCeoPanelOpen()) closeCeoPanel(); else if (isConnectorsPanelOpen()) closeConnectorsPanel(); else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
   else if (e.key === 'p' || e.key === 'P') { if (tasks && tasks.calendar) tasks.calendar.toggle(); } // V3.2.1 (16 Sep 2026): the calendar
   else if (tasks && tasks.calendar && tasks.calendar.isOpen()) return; // the calendar has its own keys (← → W M T)
   else if (e.key === 'g' || e.key === 'G') brain.toggle(); // V3.6: the full-screen Brain graph
   else if (e.key === 'b' || e.key === 'B') { if (tasks) tasks.toggle(); } // V3: the company-wide board
+  else if (e.key === 'r' || e.key === 'R') toggleCeoPanel(); // RESET AI CEO: the daily/periodic briefing panel
   else if (e.key === '+' || e.key === '=') zoomStep(1.5);
   else if (e.key === '-' || e.key === '_') zoomStep(1 / 1.5);
   else if (e.key === '0') zoomOut();
@@ -541,7 +573,7 @@ function setDark(on) {
     const m = o.material; if (!m.userData.base) m.userData.base = m.color.clone();
     if (o.userData.part === 'plinth') m.color.set(darkOn ? DARK.plinth : m.userData.base);
     else if (o.userData.part === 'walkway') m.color.set(darkOn ? DARK.walkway : m.userData.base);
-    else if (o.userData.part === 'floor') m.color.copy(darkOn ? mix(o.userData.chip, '#1b1c1a', o.userData.dept === 'brain' ? 0.07 : 0.22) : m.userData.base); // the Brain's pale sage needs a lighter touch
+    else if (o.userData.part === 'floor') m.color.copy(darkOn ? mix(o.userData.chip, '#1b1c1a', o.userData.dept === 'brain' ? 0.07 : 0.42) : m.userData.base); // OFFICE V3 (19 Sep): richer, more saturated pods against the dark ground — the Brain's pale sage still wants a lighter touch
   });
   hemi.color.set(darkOn ? 0x8e95a3 : 0xfdfff8); hemi.groundColor.set(darkOn ? 0x14151a : 0xd8d4c8); hemi.intensity = darkOn ? 0.75 : 0.85;
   key.color.set(darkOn ? 0xe4e9f2 : 0xfff1dd); key.intensity = darkOn ? 1.5 : 2.2;
@@ -656,7 +688,7 @@ function renderActivity(id) {
 /* camera target offset so the pod sits beside the rail, not behind it */
 function focusTarget(k, atPos) {
   const base = atPos ? [atPos.x, 0, atPos.z] : [LAYOUT[k].pos[0], 0, LAYOUT[k].pos[1] + 1];
-  const boardW = (tasks ? tasks.panelWidth() : 400) + 30; // V3.3: the task panel is always on the right
+  const boardW = (tasks ? tasks.panelWidth() : 340) + 30; // V3.3: the task panel is always on the right
   const zoom = atPos ? 3.3 : 2.5;
   const pxPerWorld = zoom * innerHeight / (2 * FR);
   const railW = Math.min(400, innerWidth * 0.92);
@@ -693,7 +725,7 @@ function enterFocus(k, pendingAgentId) {
   buildDeptRail(k);
   rail.className = RAIL_SIDE[k];
   rail.style.display = 'block';
-  document.body.classList.toggle('railLeft', RAIL_SIDE[k] === 'left'); // the Sahni.ai mark steps right of a docked-left rail
+  document.body.classList.toggle('railLeft', RAIL_SIDE[k] === 'left');
   // V3.4: the rail IS the chat — it opens on the department lead (or first agent) at once
   // (after the className reset above, which would otherwise drop the agentOpen state)
   const first = pendingAgentId || (AGENTS.find(x => x.dept === k && x.lead) || AGENTS.find(x => x.dept === k)).id;
@@ -1008,6 +1040,8 @@ function zoomToApproval(dept) {
   else enterFocus(dept, s.a.id);
 }
 document.getElementById('topCal').addEventListener('click', () => { if (tasks && tasks.calendar) tasks.calendar.toggle(); }); // V3.2.1: the top-bar calendar button (same as P)
+document.getElementById('ceoStatus').addEventListener('click', toggleCeoPanel); // RESET AI CEO: the top-bar badge doubles as a button (same as R)
+document.getElementById('resetStatus').addEventListener('click', toggleConnectorsPanel); // RESET INTEGRATION: the top-bar badge doubles as a button, opening the connector health panel
 document.getElementById('topAppr').addEventListener('click', () => {
   const s = Object.values(R).find(r => r.state === 'stuck');
   if (s) zoomToApproval(s.a.dept);
@@ -1056,9 +1090,13 @@ function fireAgentEvent(seedTs) {
     if (modalOpen === r.a.id && modalTab === 'activity') renderActivity(r.a.id);
   }
 }
-// seed a believable history so Activity isn't empty at boot
-for (let i = 0; i < 170; i++) fireAgentEvent(Date.now() - ri(2, 200) * 60000);
-for (const r of Object.values(R)) r.feed.sort((a, b) => b.ts - a.ts);
+// seed a believable history so Activity isn't empty at boot — RESET INTEGRATION: only for
+// the true offline/file demo (mirrors tasks.js connect()'s own protocol check). A served,
+// live office never gets fabricated history — its Activity panel starts genuinely empty.
+if (!location.protocol.startsWith('http')) {
+  for (let i = 0; i < 170; i++) fireAgentEvent(Date.now() - ri(2, 200) * 60000);
+  for (const r of Object.values(R)) r.feed.sort((a, b) => b.ts - a.ts);
+}
 
 /* ---------- minimal sim: work bobs, screen updates, brain meetings ---------- */
 let meeting = null; // Brain meetings fire ONLY on the X hotkey (AJ's call — demo cue, not ambient)
@@ -1100,8 +1138,22 @@ function walkStep(r, dt) {
 // desk-life variety: each agent cycles through work modes on its own clock
 // no 'stretch' — AJ found the stand-up stretches annoying (1 Aug). Last entry = pick fallback.
 const WORK_MODES = [
-  ['type', 0.30, 4000, 7500], ['read', 0.18, 3500, 6500], ['phone', 0.16, 4000, 8000],
-  ['glance', 0.17, 2000, 3500], ['sip', 0.11, 2500, 4000], ['spin', 0.08, 1400, 2000],
+  ['type', 0.24, 4000, 7500], ['read', 0.15, 3500, 6500], ['phone', 0.16, 4000, 8000],
+  ['glance', 0.15, 2000, 3500], ['sip', 0.10, 2500, 4000], ['spin', 0.08, 1400, 2000],
+  // 'stretch' (stand up beside the desk, arms in a wide V) was fully built -- pose AND
+  // seat-to-stand position lerp -- but never reachable during ordinary work, only via the
+  // rare approval-cheer/stuck-wave paths. Added into the regular rotation 20 Sep 2026 so
+  // the office reads as more alive: real periodic standing/position movement, not just
+  // seated arm/head motion.
+  ['stretch', 0.12, 3000, 5000],
+];
+// Idle-only rotation (21 Sep 2026) -- a genuinely idle desk (no real task) never gets the
+// work-implying poses above (type/read/phone/glance/spin), only ambient office-life
+// breaks. 'idle' itself carries most of the weight with a long dwell time specifically so
+// the room reads as calm most of the time -- see the population-density note where this
+// is used in tickSim.
+const IDLE_MODES = [
+  ['idle', 0.70, 15000, 35000], ['sip', 0.10, 2500, 4500], ['snack', 0.08, 3000, 5500], ['stretch', 0.12, 3000, 5000],
 ];
 function pickWorkMode(r, now) {
   let x = Math.random();
@@ -1190,6 +1242,31 @@ function tickSim(now, dt) {
       }
       poseWork(r.person, mode, now + r.bob * 500, dt);
       applyStandAndFacing(r, mode, now, dt);
+    } else if (r.state === 'idle') {
+      // RESET INTEGRATION: no real task attached to this desk right now — never the
+      // work-implying poses (type/phone/read; that desk's own monitor already honestly
+      // shows "○ idle", so a typing motion would visually contradict it). Real ambient
+      // office-life movement instead: mostly a relaxed seated sway, with occasional real
+      // breaks (coffee, a snack, standing up to stretch) -- these don't imply fabricated
+      // work, so they're fair game.
+      // Tuned 21 Sep 2026: the first version picked a fresh idle activity too often --
+      // with 35 independently-timed agents, several were always mid-stretch at once,
+      // reading as constant motion instead of occasional. IDLE_MODES below gives 'idle'
+      // itself a long dwell time (70% weight, 15-35s) so the office is calm most of the
+      // time, with short, rare breaks into something else.
+      if (!r.idleModeUntil || now > r.idleModeUntil) {
+        let x = Math.random();
+        for (const [mode, w, dMin, dMax] of IDLE_MODES) {
+          x -= w;
+          if (x <= 0 || mode === IDLE_MODES[IDLE_MODES.length - 1][0]) {
+            r.idleMode = mode;
+            r.idleModeUntil = now + dMin + Math.random() * (dMax - dMin);
+            break;
+          }
+        }
+      }
+      poseWork(r.person, r.idleMode || 'idle', now, dt);
+      applyStandAndFacing(r, r.idleMode || 'idle', now, dt);
     } else if (r.state === 'walking' || r.state === 'returning') {
       posePerson(r.person, 'walk', now);
       if (walkStep(r, dt)) {
@@ -1257,7 +1334,10 @@ function tickSim(now, dt) {
     nextApprovalAt = now + 50000 + Math.random() * 40000;
   }
   // agent events drive everything — feed, chat streams, billboard metrics (nothing is static)
-  if (now > nextMetricAt) {
+  // RESET INTEGRATION: this is the simulated-activity generator (fake feed text, fake
+  // STATS increments, fake brain-note count). It must never run once the office is live
+  // against a real backend — real activity comes from real tasks/agent_runs instead.
+  if (!(tasks && tasks.isLive()) && now > nextMetricAt) {
     fireAgentEvent();
     nextMetricAt = now + 2600 + Math.random() * 3800;
   }
@@ -1267,7 +1347,9 @@ function tickSim(now, dt) {
     for (const ss of screenSets) if (ss.live) ss.live.tick(now, slow);
   }
   // rotate desk screen content — a couple of screens refresh every beat so the room reads busy
-  else if (Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {
+  // RESET INTEGRATION: WORKLINES here are canned demo text, not real deliverable content —
+  // never draw them once the office is live.
+  else if (!(tasks && tasks.isLive()) && Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {
     const n = 1 + (Math.random() < 0.5 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const ss = screenSets[Math.floor(Math.random() * screenSets.length)];
@@ -1275,9 +1357,34 @@ function tickSim(now, dt) {
       ss.screenSet.tex.needsUpdate = true;
     }
   }
+  // RESET INTEGRATION: live equivalent of the block above — every desk shows what that
+  // agent is REALLY doing (its own real task title from tasks.tasks, the same live array
+  // tasks.js polls), never demo text. Redraws are cheap to check (a string compare) and
+  // only actually happen when an agent's real status changes, not on a random timer.
+  else if (tasks && tasks.isLive() && Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {
+    for (const r of Object.values(R)) {
+      const header = r.state === 'working' ? '● working' : r.state === 'stuck' ? '● stuck' : '○ idle';
+      let title;
+      if (r.state === 'working') {
+        const cur = tasks.tasks.find(t => t.agent === r.a.id && (t.state === 'doing' || t.state === 'waiting'));
+        title = cur ? cur.title : '';
+      } else {
+        const last = tasks.tasks.filter(t => t.agent === r.a.id && t.state === 'done').sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0))[0];
+        title = last ? 'last: ' + last.title : '';
+      }
+      const key = header + '|' + title;
+      if (r.screenKey === key) continue; // unchanged — nothing to redraw
+      r.screenKey = key;
+      const lines = title ? [title.slice(0, 27), title.length > 27 ? title.slice(27, 54) : ''].filter(Boolean) : ['no work yet'];
+      r.screenSet.draw(lines, header);
+      r.screenSet.tex.needsUpdate = true;
+    }
+  }
 }
 
 /* ---------- zoom LOD + HTML overlay projection ---------- */
+let badgeRectDirty = true;
+const badgeWH = {}; // cached {w,h} per department badge — see tickLOD
 const v3 = new THREE.Vector3();
 function toScreen(p) {
   v3.copy(p).project(camera);
@@ -1291,19 +1398,28 @@ function tickLOD() {
   const pillA = smooth(1.45, 1.85, z); // pills stay on at near — they name the agents
   // billboards persist at every zoom (v1 rule) — slightly larger when far, compact when near
   const badgeScale = 1.02 - 0.3 * smooth(1.2, 2.6, z);
+  // perf fix (20 Sep): offsetWidth/offsetHeight force a synchronous layout recalc — reading them
+  // here then writing badge.style.transform right after, every frame, for every department,
+  // thrashed layout on every single frame the camera moved. The raw box size only actually
+  // changes on resize or when a metric's text changes width (updateBillboards flags this).
+  if (badgeRectDirty) {
+    for (const [kk, dd] of Object.entries(deptRT)) badgeWH[kk] = { w: dd.badge.offsetWidth, h: dd.badge.offsetHeight };
+    badgeRectDirty = false;
+  }
   for (const [k, d] of Object.entries(deptRT)) {
     if (focused === k && k !== 'brain') continue; // this billboard is docked in the rail
     let [sx, sy] = toScreen(d.badgeAnchor);
     // keep billboards fully on screen (camera-readability rule)
-    const bh = d.badge.offsetHeight * badgeScale, bw = d.badge.offsetWidth * badgeScale;
+    const box = badgeWH[k] || { w: d.badge.offsetWidth, h: d.badge.offsetHeight };
+    const bh = box.h * badgeScale, bw = box.w * badgeScale;
     let xf;
     if (d.sideBadge) { // anchored by an edge, vertically centred (emails/sales/fin/delivery)
-      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 26); // V3.3: never under the panel
+      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 340) + 40); // V3.3: never under the panel — 40 (not 18px worth) so the gap reads as intentional, not a graze, at 1366px-wide desktops
       sy = clamp(sy, 64 + bh / 2, innerHeight - bh / 2 - 8);
       if (d.sideLeft) { sx = clamp(sx, bw + 8, rightEdge); xf = 'translate(-100%,-50%)'; }
       else { sx = clamp(sx, 8, rightEdge - bw); xf = 'translate(0,-50%)'; }
     } else {
-      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 400) + 26);
+      const rightEdge = innerWidth - ((tasks ? tasks.panelWidth() : 340) + 40);
       sy = clamp(sy, bh + 64, innerHeight - 12);
       sx = clamp(sx, bw / 2 + 8, rightEdge - bw / 2);
       xf = 'translate(-50%,-100%)';
@@ -1324,13 +1440,39 @@ function tickLOD() {
   }
 }
 
-/* ---------- clock (REAL local time — locked rule) ---------- */
-function tickClock() {
-  const d = new Date();
-  document.getElementById('clock').textContent =
-    d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+// RESET INTEGRATION: reflect the real bridge state in the top bar — CONNECTED (ok, fresh
+// this cycle), DEGRADED (stale — last-known values, timestamped, Reset unreachable right
+// now), or BLOCKED (never reached Reset at all). Never shown as healthy just because the
+// element exists.
+function tickResetStatus() {
+  const el = document.getElementById('resetStatus');
+  if (!el) return;
+  const label = { ok: 'CONNECTED', stale: 'DEGRADED', unavailable: 'BLOCKED', loading: 'CONNECTING' }[RESET.state] || 'BLOCKED';
+  el.className = 'tc-lab rs-' + RESET.state;
+  const age = RESET.fetchedAtMs ? Math.round((Date.now() - RESET.fetchedAtMs) / 1000) : null;
+  el.querySelector('.rs-text').textContent = 'RESET ' + label + (RESET.state === 'stale' && age !== null ? ` (${age}s old)` : '');
+  el.title = (RESET.state === 'ok' ? 'Reset Command Centre bridge — live'
+    : RESET.state === 'stale' ? `Reset Command Centre unreachable right now — showing last-known values from ${age}s ago. Reason: ${RESET.reason}`
+    : `Reset Command Centre unavailable — no data. Reason: ${RESET.reason}`) + ' (click for connector details)';
+  // RESET INTEGRATION: updateBillboards() used to be driven entirely by the now-disabled
+  // fake fireAgentEvent() ticker — without this call the real numbers in RESET never
+  // reach the department cards even though the data itself is correctly fetched.
+  updateBillboards();
 }
-setInterval(tickClock, 1000); tickClock();
+setInterval(tickResetStatus, 2000); tickResetStatus();
+
+// RESET AI CEO: mirrors tickResetStatus's honest-state convention — CONNECTED/DEGRADED/
+// BLOCKED map from CEO.state exactly like RESET.state, plus a dot when an unread priority
+// or risk exists from a cycle the panel hasn't been opened since.
+function tickCeoStatus() {
+  const el = document.getElementById('ceoStatus');
+  if (!el) return;
+  const label = { ok: 'CONNECTED', stale: 'DEGRADED', unavailable: 'NO CYCLE YET', loading: 'CONNECTING' }[CEO.state] || 'NO CYCLE YET';
+  el.className = 'tc-lab ceo-' + CEO.state + (hasUnreadCeoBriefing() ? ' ceo-unread' : '');
+  el.querySelector('.rs-text').textContent = 'CEO ' + label;
+  el.title = 'RESET AI CEO briefing (R)' + (CEO.state === 'stale' ? ` — showing the last real briefing. Reason: ${CEO.reason}` : CEO.state === 'unavailable' ? ` — ${CEO.reason}` : '');
+}
+setInterval(tickCeoStatus, 2000); tickCeoStatus();
 
 /* ---------- helpers ---------- */
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -1386,6 +1528,7 @@ if (HERO && HERO.target) { view.target.set(...HERO.target); view.zoom = HERO.zoo
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
   applyCamera();
+  badgeRectDirty = true;
 }
 addEventListener('resize', resize);
 resize();
@@ -1411,6 +1554,7 @@ window.CC = { hero, flyTo, zoomToDept, zoomOut, zoomToApproval, requestApproval,
   toggleBoard: () => tasks.toggle(), addTask: (agentId, title) => tasks.addTask(agentId, title), tasks, routines: () => tasks.routines };
 
 let last = performance.now();
+let rafHandle = null;
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   tickTween(now);
@@ -1423,6 +1567,24 @@ function loop(now) {
   mcp.tick(now, dt, view, camera, focused, focusDim);
   syncOverviewBtn();
   renderer.render(scene, camera);
-  requestAnimationFrame(loop);
+  rafHandle = requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+// Real profiling finding (20 Sep 2026): this render loop ran unconditionally forever,
+// drawing the full 3D scene every frame even while the tab sat backgrounded all day (the
+// expected real usage pattern for an always-open ops dashboard). Explicitly stopping the
+// loop on visibilitychange (rather than relying on the browser's own rAF throttling of
+// hidden tabs, which still ticks at a reduced rate) removes that cost entirely, and
+// resets `last` on resume so the first frame back doesn't see a huge stale dt.
+function startLoop() { if (rafHandle === null) rafHandle = requestAnimationFrame(loop); }
+function stopLoop() { if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; } }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopLoop();
+  else { last = performance.now(); startLoop(); }
+});
+// Real regression found 20 September 2026: gating this first call on `if
+// (!document.hidden)` looked safe, but document.hidden is not reliably settled this early
+// in a page's life -- if it misreads true even once here, the loop never starts, and
+// since the tab was never truly hidden, no later visibilitychange event ever fires to
+// recover it. Always start unconditionally; the visibilitychange listener above still
+// stops it correctly once the page is actually running and a real transition occurs.
+startLoop();

@@ -192,6 +192,9 @@ export function initTasks(ctx) {
     t.state = 'done'; t.doneAt = Date.now(); t.progress = 1;
     doneCount[t.dept]++;
     const r = R[t.agent];
+    // RESET INTEGRATION: this real task is done — if nothing else real is running for this
+    // desk, it genuinely goes idle rather than staying visually "working" forever.
+    if (t.live && r && r.state !== 'stuck' && agentTasks(t.agent, 'doing').length === 0 && agentTasks(t.agent, 'waiting').length === 0) r.state = 'idle';
     spawnEmote(r, '✓');
     feedPush(r, '✓', 'Done: ' + t.title);
     if (chatHist[t.agent]) chatPush(t.agent, { who: 'work', i: '✓', text: 'done — ' + t.title });
@@ -233,7 +236,11 @@ export function initTasks(ctx) {
   }
 
   /* ---------- seed a believable morning ---------- */
-  {
+  // RESET INTEGRATION: this fabricates a full department's worth of doing/next/done
+  // tasks out of thin air — fine for the offline/file demo, never acceptable once the
+  // office is actually served against a real backend. Mirrors connect()'s own protocol
+  // check below, since `live` itself isn't known synchronously this early.
+  if (!location.protocol.startsWith('http')) {
     const now = performance.now(), wall = Date.now();
     for (const a of AGENTS) {
       const r = R[a.id];
@@ -354,7 +361,10 @@ export function initTasks(ctx) {
     P_.ddName.textContent = DEPTS[k].short;
     P_.ddDot.style.background = DEPTS[k].chip;
     B_.dept.textContent = DEPTS[k].name.toUpperCase(); B_.dot.style.background = DEPTS[k].chip;
-    P_.input.placeholder = `Type a task for ${DEPTS[k].name.toLowerCase()}…`;
+    // Shortened 20 Sep 2026: was `Type a task for ${dept}…`, but the department is already
+    // named right next to this in the dropdown button, and the longer text wrapped to two
+    // lines at the narrower panel width, inflating the box's empty-state height.
+    P_.input.placeholder = 'Type a task…';
     updateHint();
   }
   // routing: keywords → the right agent in the chosen dept; fallback = the dept lead (or first agent)
@@ -553,7 +563,12 @@ export function initTasks(ctx) {
     try { const u = await fetch(API + '/usage' + (force ? '?refresh=1' : '')).then(r => r.json()); if (onUsage) onUsage(u); } catch {}
   }
   async function poll() {
-    if (!live || polling) return; polling = true;
+    // Real profiling finding (20 Sep 2026): this fired every 6s forever, including while
+    // the tab sat backgrounded all day (the expected usage pattern for an always-open ops
+    // dashboard) -- ~29,000 wasted requests/day for a page nobody was looking at. The
+    // visibilitychange listener below (near setInterval(poll, 6000)) polls once
+    // immediately on return so nothing looks stale when you switch back.
+    if (!live || polling || document.hidden) return; polling = true;
     if (usageDue || ++pollN % 5 === 0) { usageDue = false; pollUsage(); }
     try {
       const [rl, tl] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json())]);
@@ -613,6 +628,7 @@ export function initTasks(ctx) {
     if (t.state === 'scheduled' && st.state !== 'scheduled') { t.state = 'next'; t.addedAt = st.addedAt || Date.now(); t.late = !!st.late; t.due = st.due; touch(t, 'added'); spawnEmote(R[t.agent], '⏱'); feedPush(R[t.agent], '⏱', `Scheduled task fired: ${t.title}${t.late ? ' (late)' : ''}`); if (calendar) calendar.refresh(); }
     if (st.state === 'doing' && t.state !== 'doing') {
       t.state = 'doing'; t.startedAt = performance.now() - Math.max(0, Date.now() - (st.startedAt || Date.now())); t.progress = 0; t.pausedAt = null; t.running = true; t.ready = false; t.srv = true; t.changedAt = st.startedAt || Date.now(); touch(t, 'started');
+      if (R[t.agent]) R[t.agent].state = 'working'; // RESET INTEGRATION: a real task actually started — the desk really is working
     } else if (st.state === 'waiting' && t.draftAt !== st.waitingAt) { // a new draft is waiting for the OK (the first, or a rework after REJECT)
       copyResult(t, st); t.state = 'waiting'; t.draftAt = st.waitingAt; t.ask = st.ask; t.changedAt = st.waitingAt || Date.now(); t.running = true; touch(t, 'waiting');
       askApproval(t);
@@ -643,7 +659,7 @@ export function initTasks(ctx) {
     post(`/tasks/${sid}/reject`, { feedback }); toDoing(t); chatPush(agentId, { who: 'agent', text: 'On it — reworking it with your note. It comes back here for your OK.' });
     return true;
   }
-  function toDoing(t) { t.state = 'doing'; t.startedAt = performance.now(); t.progress = 0; t.pausedAt = null; t.running = true; t.ready = false; t.srv = true; touch(t, 'started'); }
+  function toDoing(t) { t.state = 'doing'; t.startedAt = performance.now(); t.progress = 0; t.pausedAt = null; t.running = true; t.ready = false; t.srv = true; touch(t, 'started'); if (R[t.agent]) R[t.agent].state = 'working'; }
   // LIVE: the agent picks the task up → Claude does it on the server → the result lands in the chat
   async function runLive(t, feedback) {
     t.running = true; t.ready = false;
@@ -688,6 +704,7 @@ export function initTasks(ctx) {
       dirty = true;
       if (onLive) onLive(h);
       await poll(); setInterval(poll, 6000); // V3.5: routines fire on the server's clock — the page keeps up
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); }); // catch up immediately on return, see poll()'s own guard
     } catch (e) { console.warn('office server not reachable — running offline:', e.message); }
   }
   connect();
@@ -956,7 +973,12 @@ export function initTasks(ctx) {
           d.progress = Math.min(1, (now - d.startedAt) / d.dur);
           if (d.progress >= 1) complete(d);
         }
-      } else {
+      } else if (!live) {
+        // RESET INTEGRATION: this is the actual source of continuous fake task growth —
+        // every idle desk gets a fabricated task from brainSend() every 6-22s, forever,
+        // regardless of anything else. A real task's own state (doing/waiting/done/
+        // scheduled) is entirely server/poll-driven — a live office has nothing for this
+        // branch to do at all, so it's disabled outright rather than merely throttled.
         const nx = agentTasks(id, 'next').sort((a, b) => a.addedAt - b.addedAt)[0];
         if (nx) { start(nx, now); r.nextBrainAt = null; }
         else if (!r.nextBrainAt) r.nextBrainAt = now + 6000 + Math.random() * 16000;

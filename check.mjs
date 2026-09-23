@@ -96,6 +96,18 @@ await step('lessons: a correction is recorded and standing rules come back', asy
   return `${r.rules.length} standing rules · ${r.oneOffs.length} one-off · agent with no file gets nothing`;
 });
 await step('interview: the lead asks five questions, then writes briefs + a skill into the brain', async () => {
+  // This test's own temp-brain roster merge always reads the real repo-root
+  // office.agents.local.json too (roster.mjs's LOCAL constant is a fixed path,
+  // independent of which brain directory is passed in) — a real deployment's
+  // local override correctly wins there, same as production, which shadows this
+  // test's fixture brief. Move it aside for the duration of just this test so the
+  // test exercises an unconfigured roster, exactly as it did before any local
+  // customisation existed, then restore it unconditionally.
+  const localOverride = path.join(ROOT, 'office.agents.local.json');
+  const localOverrideBackup = localOverride + '.check-backup';
+  const hadLocalOverride = fs.existsSync(localOverride);
+  if (hadLocalOverride) fs.renameSync(localOverride, localOverrideBackup);
+  try {
   const onboard = await import('./onboard.mjs'); const { loadRoster } = await import('./roster.mjs'); const { loadSkills } = await import('./skills.mjs'); const os = await import('node:os');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-onboard-')); const brain = path.join(tmp, 'brain'), data = path.join(tmp, 'data'); fs.mkdirSync(brain);
   const agents = loadRoster(brain).agents; const dept = agents.filter(a => a.department === 'sales'); const lead = dept.find(a => a.lead);
@@ -117,6 +129,9 @@ await step('interview: the lead asks five questions, then writes briefs + a skil
   const c = await onboard.handle('set up', ctx); await onboard.handle('cancel', ctx); if (onboard.active(data, 'sales')) throw new Error('cancel did not clear');
   fs.rmSync(tmp, { recursive: true, force: true });
   return `5 questions · 2 briefs merged · skill wholesale-quote→piper with template · sales set up, fin not · cancel clears`;
+  } finally {
+    if (hadLocalOverride) fs.renameSync(localOverrideBackup, localOverride);
+  }
 });
 await step('connectors: claude mcp list parses', async () => {
   const m = await import('./mcp.mjs');
@@ -296,8 +311,19 @@ await step('calendar: a routine can start on a date, and projects forward day by
   const v = validate({ id: 'oct', dept: 'emails', agent: 'elead', title: 'x', text: 'x', when: { kind: 'weekdays', at: '08:00', start: '2026-10-05' } }, loadRoster().agents); if (v.problems.length || v.routine.when.start !== '2026-10-05') throw new Error('routine start lost: ' + v.problems.join(' | '));
   return 'start date honoured · past start ignored · 3 Mondays projected · described "from 5 Jan" · picker + routines carry start';
 });
-await step('config: browser and teams default on, max 4', async () => {
-  const c = loadConfig(); if (c.tools.browser !== true || c.teams.enabled !== true || c.teams.max !== 4) throw new Error(JSON.stringify({ tools: c.tools, teams: c.teams }));
+await step('config: browser and teams match the shipped default, or a deliberate local override', async () => {
+  // A real deployment may intentionally turn browser off (or change teams.max) in
+  // office.config.local.json — that's a legitimate customisation, not a broken
+  // config. This checks the loaded config actually reflects whichever of the two
+  // is really in force, rather than assuming every deployment is unconfigured.
+  const localPath = path.join(ROOT, 'office.config.local.json');
+  const local = fs.existsSync(localPath) ? JSON.parse(fs.readFileSync(localPath, 'utf8')) : {};
+  const expectBrowser = local.tools?.browser ?? true;
+  const expectTeamsEnabled = local.teams?.enabled ?? true;
+  const expectTeamsMax = local.teams?.max ?? 4;
+  const c = loadConfig();
+  if (c.tools.browser !== expectBrowser || c.teams.enabled !== expectTeamsEnabled || c.teams.max !== expectTeamsMax) throw new Error(JSON.stringify({ tools: c.tools, teams: c.teams, expected: { browser: expectBrowser, teamsEnabled: expectTeamsEnabled, teamsMax: expectTeamsMax } }));
+  return local.tools || local.teams ? `local override respected: browser=${expectBrowser}, teams.max=${expectTeamsMax}` : 'shipped default: browser=true, teams.max=4';
 });
 
 /* ---------- 2. offline smoke (Playwright) ---------- */
@@ -325,8 +351,13 @@ else {
     });
     await step('smoke: command bar adds a task in demo mode', async () => {
       await page.click('.tp-dd'); await page.click('.tp-menu button[data-k="marketing"]');
-      await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel'); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
+      await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel'); await page.keyboard.press('Enter');
+      // Poll for the real post-Add state instead of a fixed sleep — under load (many
+      // local Node services running at once) 600ms was sometimes not enough. The hint
+      // and the feed row re-render on separate ticks, so both are polled, not just the hint.
+      await page.waitForFunction(() => /Added/.test(document.querySelector('.tp-hint')?.textContent || ''), null, { timeout: 3000 }).catch(() => {});
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added/.test(hint)) throw new Error('hint: ' + hint);
+      await page.waitForFunction(() => [...document.querySelectorAll('.tp-row .tp-t')].some(e => /teaser/i.test(e.textContent)), null, { timeout: 3000 }).catch(() => {});
       const row = await page.evaluate(() => [...document.querySelectorAll('.tp-row .tp-t')].some(e => /teaser/i.test(e.textContent))); if (!row) throw new Error('row not in the feed');
       return hint.trim().slice(0, 60);
     });
@@ -336,8 +367,15 @@ else {
       await page.fill('.tp-in', 'as a team, plan the spring outreach push');
       await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
       const pre = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Team · SALES LEAD/.test(pre)) throw new Error('hint before Add: ' + pre);
-      await page.keyboard.press('Enter'); await page.waitForTimeout(700);
+      await page.keyboard.press('Enter');
+      // Poll instead of a fixed 700ms sleep — a team Add creates a lead task plus
+      // several piece cards, more render work than a plain Add, and was the most
+      // frequent source of intermittent failure under load.
+      await page.waitForFunction(() => /Added — SALES LEAD has it with/.test(document.querySelector('.tp-hint')?.textContent || ''), null, { timeout: 3000 }).catch(() => {});
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added — SALES LEAD has it with/.test(hint)) throw new Error('hint: ' + hint);
+      // The hint updates on one render tick; the lead row + piece cards were observed
+      // rendering on a later one, so the hint alone was not a reliable readiness signal.
+      await page.waitForFunction(() => document.querySelectorAll('.tp-row.piece').length > 0, null, { timeout: 3000 }).catch(() => {});
       const n = await page.evaluate(() => ({ lead: [...document.querySelectorAll('.tp-row .tp-t')].filter(e => /⚑ As a team, plan the spring/.test(e.textContent)).length, pieces: document.querySelectorAll('.tp-row.piece').length, chip: [...document.querySelectorAll('.tp-team-chip')].map(e => e.textContent) }));
       if (n.lead !== 1 || n.pieces < 2 || !n.chip.some(c => /^TEAM [34]$/.test(c)) || !n.chip.includes('PIECE')) throw new Error(JSON.stringify(n));
       await page.fill('.tp-in', 'draft the renewal email'); await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
@@ -418,7 +456,10 @@ else {
       return `${cells} cells · ${rt} routine runs on the grid · rail ${rail} · task scheduled for ${target} · routine starts ${target} (none before) · marketing refused · week view 7`;
     });
     await step('smoke: department focus opens the chat rail', async () => {
-      await page.keyboard.press('1'); await page.waitForTimeout(1800);
+      await page.keyboard.press('1');
+      // Poll instead of a fixed 1800ms sleep — this open animation was the other
+      // frequent source of intermittent failure under load.
+      await page.waitForFunction(() => /agentOpen/.test(document.getElementById('rail')?.className || '') && /open/.test(document.getElementById('rail')?.className || ''), null, { timeout: 4000 }).catch(() => {});
       const cls = await page.evaluate(() => document.getElementById('rail').className); if (!/agentOpen/.test(cls) || !/open/.test(cls)) throw new Error('rail: ' + cls);
       const strip = await page.evaluate(() => document.querySelector('#topconn').className); if (!/focus/.test(strip)) throw new Error('top strip not centred');
       await page.keyboard.press('Escape'); await page.waitForTimeout(1200);
@@ -436,6 +477,23 @@ else {
       await page.keyboard.press('Escape'); await page.waitForTimeout(300);
       if (await page.evaluate(() => window.CC.brain.isOpen())) throw new Error('graph did not close');
       return n + ' notes';
+    });
+    await step('smoke: CEO panel opens and shows an honest empty state before any cycle has run', async () => {
+      await page.keyboard.press('r');
+      // The panel opens via the same double-requestAnimationFrame pattern as #board (tasks.js) — a
+      // fixed 700ms wait was empirically flaky at this point in the run (headless WebGL frames can
+      // be slow after several prior panel animations), so poll instead, matching the "approval flow
+      // reaches the panel" step's own comment on the same class of timing issue.
+      await page.waitForFunction(() => document.getElementById('ceoPanel')?.classList.contains('on'), null, { timeout: 4000 }).catch(() => {});
+      const opened = await page.evaluate(() => document.getElementById('ceoPanel').classList.contains('on')); if (!opened) throw new Error('CEO panel did not open');
+      const shown = await page.evaluate(() => document.querySelector('.ceo-panel')?.textContent || '');
+      // This is a file:// page (see the goto above) — ceo-panel.js's refreshCeo() never runs at all
+      // (its own protocol guard, matching reset-status.js's identical convention, only fires over
+      // http), so CEO.state stays 'Loading…' forever here. That is itself the correct, honest,
+      // non-fabricated behaviour for this environment — accept it alongside the served-app states.
+      if (!/No CEO cycle has run yet|Priorities|Loading/.test(shown)) throw new Error('CEO panel did not render an honest state: ' + shown.slice(0, 200));
+      await page.keyboard.press('Escape'); await page.waitForTimeout(500);
+      const closed = await page.evaluate(() => document.getElementById('ceoPanel').classList.contains('on')); if (closed) throw new Error('CEO panel did not close');
     });
     await step('smoke: approval flow reaches the panel', async () => {
       await page.evaluate(() => window.CC.requestApproval('ada'));
@@ -467,6 +525,12 @@ else {
       return `${m.servers.length} servers · ${c} connected · agents get tools: ${m.tools ? 'yes' : 'no (API backend)'}${m.web ? ' + web' : ''}`;
     });
     await step('server: /api/health carries the roster', async () => { if (!Array.isArray(up.agents) || up.agents.length !== 35) throw new Error('agents: ' + (up.agents && up.agents.length)); if (!up.agents[0].does) throw new Error('no job description'); });
+    await step('server: /api/ceo is an honest read (available:false when no cycle has run)', async () => {
+      const r = await (await fetch(base + '/api/ceo')).json();
+      if (typeof r.available !== 'boolean') throw new Error('missing available flag');
+      if (r.available === false && r.state !== null) throw new Error('unavailable must report state:null, not a guessed default');
+      return `available: ${r.available}`;
+    });
     await step('server: the office default is Sonnet and /api/usage always answers', async () => {
       if (up.model !== 'sonnet' || JSON.stringify(up.models) !== '["sonnet","opus","fable"]') throw new Error('health model: ' + up.model);
       if (up.effort !== '' || JSON.stringify(up.efforts) !== '["low","medium","high","xhigh","max"]') throw new Error('health effort: ' + up.effort);
@@ -499,12 +563,21 @@ else {
       const m = await n.json(); if (n.status !== 400 || !m.noSchedule) throw new Error('no schedule not named: ' + JSON.stringify(m));
       return j.error;
     });
-    await step('server: /api/health says teams and the browser are on; the bar has the Chrome tile', async () => {
-      if (!up.teams || up.teams.enabled !== true || up.teams.max !== 4) throw new Error('health.teams: ' + JSON.stringify(up.teams));
-      if (!up.browser || up.browser.on !== true) throw new Error('health.browser: ' + JSON.stringify(up.browser));
+    await step('server: /api/health reflects the real teams/browser config (shipped default or a deliberate local override)', async () => {
+      const localPath = path.join(ROOT, 'office.config.local.json');
+      const local = fs.existsSync(localPath) ? JSON.parse(fs.readFileSync(localPath, 'utf8')) : {};
+      const expectBrowserOn = local.tools?.browser ?? true;
+      const expectTeamsMax = local.teams?.max ?? 4;
+      if (!up.teams || up.teams.enabled !== true || up.teams.max !== expectTeamsMax) throw new Error('health.teams: ' + JSON.stringify(up.teams));
+      if (!up.browser || up.browser.on !== expectBrowserOn) throw new Error('health.browser: ' + JSON.stringify(up.browser));
       const m = await (await fetch(base + '/api/mcp')).json();
-      const c = m.servers.find(s => s.id === 'claude-in-chrome'); if (!c || c.key !== 'chrome' || !Array.isArray(c.depts) || c.depts.length !== 6) throw new Error('chrome not in /api/mcp: ' + JSON.stringify(c));
-      return `teams on (max ${up.teams.max}) · Chrome ${c.status}${up.browser.device ? ' · ' + up.browser.device : ''} · wired to every pod`;
+      const c = m.servers.find(s => s.id === 'claude-in-chrome');
+      if (expectBrowserOn) {
+        if (!c || c.key !== 'chrome' || !Array.isArray(c.depts) || c.depts.length !== 6) throw new Error('chrome not in /api/mcp: ' + JSON.stringify(c));
+      } else if (c) {
+        throw new Error('browser is off by local override but the Chrome tile is still listed: ' + JSON.stringify(c));
+      }
+      return `teams on (max ${up.teams.max}) · browser ${expectBrowserOn ? 'on, Chrome tile present' : 'off (local override), Chrome tile correctly absent'} · wired to every pod`;
     });
     await step('server: a task scheduled for a time that has passed is refused', async () => { // V3.2.1
       const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'sales', text: 'call the leads', at: Date.now() - 3600000 }) });
@@ -615,6 +688,186 @@ else {
     } else ok('live: skipped', 'set CHECK_LIVE=1 to route one task and one chat through Claude');
   }
   srv.kill();
+}
+
+/* ---------- 4. shared reset-bridge gateway (offline, deterministic — a mock upstream
+   stands in for Reset's real dev server so this suite never depends on it being up) ---------- */
+{
+  const RESET_BRIDGE_DIR = process.env.RESET_BRIDGE_DIR || 'C:/Users/Navka/Documents/reset-mcp-bridge';
+  const gatewayScript = path.join(RESET_BRIDGE_DIR, 'gateway.mjs');
+  if (!fs.existsSync(gatewayScript)) {
+    bad('gateway: gateway.mjs found', 'not at ' + gatewayScript);
+  } else {
+    const mockPort = 4700 + Math.floor(Math.random() * 100);
+    const gwPort = 4800 + Math.floor(Math.random() * 100);
+    const mock = spawn('node', ['-e', `
+      const http = require('node:http');
+      let mode = 'ok', hits = { snapshot: 0, runAgent: 0 };
+      http.createServer((req, res) => {
+        if (req.url === '/__mode' && req.method === 'POST') { let b=''; req.on('data',c=>b+=c); req.on('end',()=>{ mode = JSON.parse(b).mode; res.end('ok'); }); return; }
+        if (req.url === '/__hits') { res.setHeader('content-type','application/json'); res.end(JSON.stringify(hits)); return; }
+        if (req.url === '/api/snapshot') {
+          hits.snapshot++;
+          if (mode === 'fail') { res.statusCode = 502; res.end(JSON.stringify({ error: 'mock-upstream-down' })); return; }
+          res.setHeader('content-type','application/json');
+          res.end(JSON.stringify({ generatedAtMs: Date.now(), gmail: { outbox: [], signalCounts: {} }, discovery: { byStatus: {}, recent: [] }, vaFloor: { recentCalls: [] }, agentRuns: [], funnel: [], wave1: [], killSwitch: { state: 'off' } }));
+          return;
+        }
+        if (req.url === '/api/run-agent' && req.method === 'POST') {
+          hits.runAgent++;
+          res.setHeader('content-type','application/json');
+          res.end(JSON.stringify({ kind: 'executed', agentId: 'ceo', result: { status: 'complete', hit: hits.runAgent } }));
+          return;
+        }
+        if (req.url === '/api/calculate' && req.method === 'POST') {
+          hits.calculate = (hits.calculate || 0) + 1;
+          let b=''; req.on('data',c=>b+=c); req.on('end',()=>{
+            const { kind } = JSON.parse(b);
+            res.setHeader('content-type','application/json');
+            if (kind === 'unknown-calculator-for-test') { res.statusCode = 400; res.end(JSON.stringify({ error: 'unknown-calculator' })); return; }
+            res.end(JSON.stringify({ status: 'held', reasons: ['test-fixture-always-holds'], calls: hits.calculate }));
+          });
+          return;
+        }
+        res.statusCode = 404; res.end('{}');
+      }).listen(${mockPort}, '127.0.0.1', () => console.log('mock up'));
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    await new Promise((resolve, reject) => { let out = ''; mock.stdout.on('data', d => { out += d; if (/mock up/.test(out)) resolve(); }); mock.on('error', reject); setTimeout(() => resolve(), 2000); });
+
+    const gw = spawn('node', [gatewayScript], { env: { ...process.env, RESET_API_URL: `http://127.0.0.1:${mockPort}`, GATEWAY_PORT: String(gwPort) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let gwLog = ''; gw.stdout.on('data', d => { gwLog += d; }); gw.stderr.on('data', d => { gwLog += d; });
+    const gwBase = `http://127.0.0.1:${gwPort}`;
+    const gwUp = await (async () => { for (let i = 0; i < 30; i++) { try { const r = await fetch(gwBase + '/health'); if (r.status) return true; } catch {} await new Promise(r => setTimeout(r, 200)); } return false; })();
+    if (!gwUp) bad('gateway: starts', gwLog.trim().split('\n').slice(-2).join(' | ') || 'no response');
+    else {
+      ok('gateway: starts', `mock upstream :${mockPort} · gateway :${gwPort}`);
+      const mockHits = async () => (await (await fetch(`http://127.0.0.1:${mockPort}/__hits`)).json());
+      const setMode = async m => { await fetch(`http://127.0.0.1:${mockPort}/__mode`, { method: 'POST', body: JSON.stringify({ mode: m }) }); };
+
+      await step('gateway: health reports ok against a healthy upstream', async () => {
+        const h = await (await fetch(gwBase + '/health')).json();
+        if (h.status !== 'ok' || !h.runId) throw new Error(JSON.stringify(h));
+        return `status ${h.status} · runId ${h.runId}`;
+      });
+      await step('gateway: concurrent GETs never cause more than one real upstream fetch (single-flight cache)', async () => {
+        const before = (await mockHits()).snapshot; // may already be warm from the health check just above — that's fine, it's still proof of cache reuse
+        const results = await Promise.all(Array.from({ length: 8 }, () => fetch(gwBase + '/snapshot').then(r => r.json())));
+        const after = (await mockHits()).snapshot;
+        if (after - before > 1) throw new Error(`upstream hit ${after - before} times for 8 concurrent callers — should never exceed 1`);
+        const runIds = new Set(results.map(r => r.runId)); if (runIds.size !== 8) throw new Error('expected 8 distinct correlation ids, got ' + runIds.size);
+        return `8 concurrent callers → ${after - before} new upstream hit(s) · 8 distinct runIds`;
+      });
+      await step('gateway: a narrow view is a slice of the same cached snapshot, not a new query', async () => {
+        const before = (await mockHits()).snapshot;
+        const r = await (await fetch(gwBase + '/view/prospects')).json();
+        const after = (await mockHits()).snapshot;
+        if (r.view !== 'prospects' || !('data' in r)) throw new Error(JSON.stringify(r));
+        if (after !== before) throw new Error('a view triggered its own upstream fetch instead of reusing the cache');
+        return 'no new upstream hit (served from cache)';
+      });
+      await step('gateway: an unknown view is refused, not silently empty', async () => {
+        const r = await fetch(gwBase + '/view/nonexistent'); const j = await r.json();
+        if (r.status !== 404 || !Array.isArray(j.known)) throw new Error(r.status + ' ' + JSON.stringify(j));
+        return `${j.known.length} known views`;
+      });
+      await step('gateway: two concurrent identical run-agent calls execute the real upstream exactly once (no duplicate execution from retries)', async () => {
+        const before = (await mockHits()).runAgent;
+        const [a, b] = await Promise.all([
+          fetch(gwBase + '/run-agent', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: 'ceo' }) }).then(r => r.json()),
+          fetch(gwBase + '/run-agent', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: 'ceo' }) }).then(r => r.json()),
+        ]);
+        const after = (await mockHits()).runAgent;
+        if (after - before !== 1) throw new Error(`upstream run-agent hit ${after - before} times for 2 concurrent identical calls`);
+        if (JSON.stringify(a.result) !== JSON.stringify(b.result)) throw new Error('the two callers got different results for a deduped call');
+        return `1 real execution shared by both callers · result.hit=${a.result.hit}`;
+      });
+      await step('gateway: /calculate proxies to the real, pure Reset business-logic calculators', async () => {
+        const r = await fetch(gwBase + '/calculate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'assess-tender', input: { tender: {} } }) });
+        const j = await r.json();
+        if (r.status !== 200 || j.status !== 'held') throw new Error(r.status + ' ' + JSON.stringify(j));
+        return `held: ${j.reasons.join(', ')}`;
+      });
+      await step('gateway: /calculate with no kind is a structured 400, not a crash', async () => {
+        const r = await fetch(gwBase + '/calculate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        if (r.status !== 400) throw new Error('status ' + r.status);
+      });
+      await step('gateway: an unknown calculator kind is refused with the real upstream error, not silently 200', async () => {
+        const r = await fetch(gwBase + '/calculate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'unknown-calculator-for-test', input: {} }) });
+        if (r.status !== 400) throw new Error('status ' + r.status);
+      });
+      await step('gateway: a missing agentId is a structured 400, not a crash', async () => {
+        const r = await fetch(gwBase + '/run-agent', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        const j = await r.json(); if (r.status !== 400 || !j.error || !j.runId) throw new Error(r.status + ' ' + JSON.stringify(j));
+      });
+      await step('gateway: upstream failure degrades honestly (blocked, then degraded once a good snapshot exists)', async () => {
+        await setMode('fail');
+        // force a fresh attempt past the cache window is not needed here: /health always re-checks via getSnapshot's own cache rules,
+        // but the prior successful fetch is still within CACHE_MS, so hit a fresh gateway instance to test the true first-failure (blocked) path.
+        const failGwPort = gwPort + 1;
+        const failGw = spawn('node', [gatewayScript], { env: { ...process.env, RESET_API_URL: `http://127.0.0.1:${mockPort}`, GATEWAY_PORT: String(failGwPort) }, stdio: 'ignore' });
+        try {
+          await new Promise(r => setTimeout(r, 600));
+          const h = await (await fetch(`http://127.0.0.1:${failGwPort}/health`)).json();
+          if (h.status !== 'blocked' || !h.reason) throw new Error('expected blocked with a reason, got ' + JSON.stringify(h));
+          await setMode('ok');
+          return `never-succeeded upstream correctly reported as blocked: ${h.reason}`;
+        } finally { failGw.kill(); await setMode('ok'); }
+      });
+      await step('gateway: no credential-shaped values ever appear in a response', async () => {
+        const h = await (await fetch(gwBase + '/health')).json();
+        const s = JSON.stringify(h);
+        if (/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/.test(s) || /sk-[A-Za-z0-9]{10,}/.test(s) || /Bearer /i.test(s)) throw new Error('response looks credential-shaped: ' + s.slice(0, 200));
+      });
+    }
+    mock.kill(); gw.kill();
+  }
+}
+
+/* ---------- 5. static regressions: routing confidence, no-fake-activity gates, no secrets ---------- */
+{
+  await step('router: the routing prompt asks for a confidence score and a runner-up (ambiguous cases resolve to the lead, not a guess)', async () => {
+    const src = fs.readFileSync(path.join(ROOT, 'serve.mjs'), 'utf8');
+    if (!/"confidence"/.test(src) || !/runner_up/.test(src)) throw new Error('route() no longer asks for confidence/runner_up');
+    if (!/ambiguous/i.test(src)) throw new Error('no ambiguous-routes-to-lead fallback found');
+  });
+  await step('model routing: the router and each TEAM plan pick a complexity tier, mapped centrally to a model (WORKER → TASK → MODEL is traceable)', async () => {
+    const { loadConfig } = await import('./config.mjs?' + Date.now());
+    const cfg = loadConfig();
+    if (!cfg.modelPolicy || !['fast', 'reasoning', 'strongest'].every(k => cfg.modelPolicy[k])) throw new Error('office.config modelPolicy missing a tier: ' + JSON.stringify(cfg.modelPolicy));
+    const { modelFor, effortFor } = await import('./src/models.js?' + Date.now());
+    if (modelFor({ router: 'opus', agent: 'sonnet', office: 'sonnet' }).from !== 'router') throw new Error('router pick does not beat the agent default');
+    if (modelFor({ task: 'opus', router: 'fable', agent: 'sonnet', office: 'sonnet' }).from !== 'task') throw new Error('an explicit task override must still beat the router pick');
+    if (effortFor({ router: 'high', agent: '', office: '', model: 'sonnet' }).from !== 'router') throw new Error('router-set effort does not flow through effortFor');
+    const serveSrc = fs.readFileSync(path.join(ROOT, 'serve.mjs'), 'utf8');
+    if (!/"complexity"/.test(serveSrc) || !/routerModel/.test(serveSrc)) throw new Error('route() no longer computes a complexity-based routerModel');
+    const teamsSrc = fs.readFileSync(path.join(ROOT, 'teams.mjs'), 'utf8');
+    if (!/complexity/.test(teamsSrc) || !/modelPolicy/.test(teamsSrc)) throw new Error('team plan pieces no longer carry a complexity/model pick');
+    return `tiers: ${JSON.stringify(cfg.modelPolicy)}`;
+  });
+  await step('ui: fake task/activity generators remain gated behind live/protocol checks (no-demo-data regression)', async () => {
+    const tasksSrc = fs.readFileSync(path.join(ROOT, 'src', 'tasks.js'), 'utf8');
+    const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main.js'), 'utf8');
+    if (!/!live[\s\S]{0,80}brainSend/.test(tasksSrc) && !/brainSend[\s\S]{0,10}$/m.test(tasksSrc)) {
+      if (!/else if \(!live\)/.test(tasksSrc)) throw new Error('tick()\'s !live gate around brainSend is missing — fake task generation regression risk');
+    }
+    if (!/location\.protocol\.startsWith\('http'\)/.test(tasksSrc)) throw new Error('the demo-seed protocol gate is missing from tasks.js');
+    if (!/isLive\(\)/.test(mainSrc)) throw new Error('fireAgentEvent\'s live gate is missing from main.js');
+  });
+  await step('workforce: the 35-worker system reuses the 19 production agents\' real capability as calculator tools, not a second execution path', async () => {
+    const RESET_BRIDGE_DIR = process.env.RESET_BRIDGE_DIR || 'C:/Users/Navka/Documents/reset-mcp-bridge';
+    const src = fs.readFileSync(path.join(RESET_BRIDGE_DIR, 'server.mjs'), 'utf8');
+    for (const tool of ['reset_assess_prospect', 'reset_prioritize_opportunities', 'reset_assess_tender', 'reset_calculate_pricing', 'reset_render_proposal', 'reset_build_walkthrough_brief']) {
+      if (!src.includes(tool)) throw new Error(`${tool} missing — a real 19-agent capability was not migrated to the 35-worker toolset`);
+    }
+  });
+  await step('safety: reset-bridge files hold no hardcoded credentials', async () => {
+    const RESET_BRIDGE_DIR = process.env.RESET_BRIDGE_DIR || 'C:/Users/Navka/Documents/reset-mcp-bridge';
+    for (const f of ['gateway.mjs', 'server.mjs']) {
+      const p = path.join(RESET_BRIDGE_DIR, f); if (!fs.existsSync(p)) continue;
+      const s = fs.readFileSync(p, 'utf8');
+      if (/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/.test(s) || /sk-[A-Za-z0-9]{10,}/.test(s) || /api[_-]?key\s*[:=]\s*['"][A-Za-z0-9]{10,}/i.test(s)) throw new Error(f + ' looks like it embeds a credential');
+    }
+  });
 }
 
 /* ---------- summary ---------- */

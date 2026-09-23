@@ -52,6 +52,7 @@ import * as usage from './usage.mjs';
 import * as teams from './teams.mjs';
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
+import { fetchResetStatus, fetchConnectors } from './reset-bridge.mjs'; // RESET INTEGRATION: read-only bridge to Reset Command Centre's real /api/snapshot
 
 const cfg = loadConfig();
 const HTML = path.join(ROOT, 'dist', 'command-centre-v2.html'); // built by build.mjs; shipped so npm start works without a build
@@ -212,14 +213,28 @@ const toolKeys = names => [...new Set(names.map(n => /^mcp__/.test(n) ? mcp.keyO
 async function route(dept, text) {
   const d = DEPTS[dept]; refreshSkills();
   const system = `You are the router for ${cfg.name}, a business whose departments are run by AI agents. ` +
-    'Pick the single best agent for the owner\'s request — an agent whose skills match the request is the right one — and return ONLY a JSON object — no prose, no code fences.';
+    'Pick the single best agent for the owner\'s request — an agent whose role, brief and skills most specifically match the request, not just the department in general. ' +
+    'When the request could plausibly fit two adjacent specialists, say so honestly with a lower confidence rather than guessing between them. Return ONLY a JSON object — no prose, no code fences.';
   const user = `Department: ${d.name}\nAgents (id · name · role · what they do):\n${rosterText(dept)}\n\nOwner's request: "${text}"\n\n` +
-    'Return: {"agent":"<id from the list>","title":"<clean imperative task title, max 70 characters>","plan":["<step>","<step>","<step>"],"eta_minutes":<integer>,"why":"<one short sentence>","needs_ok":<true if doing this involves sending, posting, paying, deleting or changing anything outside this machine; false if it only reads and reports>}';
+    'Return: {"agent":"<id from the list — your best single pick>","confidence":<0 to 1, how sure you are THIS agent specifically (not just the department) is the right one>,' +
+    '"runner_up":"<id of the next-best fit if genuinely close, else empty string>","title":"<clean imperative task title, max 70 characters>","plan":["<step>","<step>","<step>"],' +
+    '"eta_minutes":<integer>,"complexity":"<\"fast\" for simple classification/extraction/formatting/routing/status checks; \"reasoning\" for qualification/strategy/pricing/proposals/ambiguous judgment; \"strongest\" only for genuinely high-value deep-reasoning work — do not overuse>",' +
+    '"why":"<one short sentence; if confidence is low, name the runner-up and the ambiguity>","needs_ok":<true if doing this involves sending, posting, paying, deleting or changing anything outside this machine; false if it only reads and reports>}';
   const j = parseJSON(await ask(system, user, { maxTokens: 800, timeout: 150000, model: 'sonnet' })); // routing is a one-line JSON job: always Sonnet
   const valid = AGENTS.find(a => a.id === j.agent && a.department === dept);
-  const agent = valid ? valid.id : (AGENTS.find(a => a.department === dept && a.lead) || AGENTS.find(a => a.department === dept)).id;
+  const runnerUp = j.runner_up && AGENTS.find(a => a.id === j.runner_up && a.department === dept);
+  const confidence = Number.isFinite(j.confidence) ? j.confidence : 1;
+  const lead = AGENTS.find(a => a.department === dept && a.lead) || AGENTS.find(a => a.department === dept);
+  // Genuinely ambiguous between two non-lead specialists: the router itself said so (low
+  // confidence + a real runner-up) — rather than guess, hand it to the department lead to
+  // delegate, the same way a broad "run my X department" command already does.
+  const ambiguous = valid && !valid.lead && runnerUp && confidence < 0.55;
+  const agent = ambiguous ? lead.id : (valid ? valid.id : lead.id);
+  const why = ambiguous ? `Ambiguous between ${valid.id} and ${runnerUp.id} (router confidence ${confidence}) — sent to ${lead.name} to delegate. ${String(j.why || '')}`.trim() : String(j.why || '');
+  const complexity = ['fast', 'reasoning', 'strongest'].includes(j.complexity) ? j.complexity : 'reasoning';
   return { agent, title: String(j.title || text).slice(0, 90), plan: Array.isArray(j.plan) ? j.plan.slice(0, 4).map(String) : [],
-    eta: Number.isFinite(j.eta_minutes) ? j.eta_minutes : 30, why: String(j.why || ''), needsOk: typeof j.needs_ok === 'boolean' ? j.needs_ok : routines.guessNeedsOk(text) };
+    eta: Number.isFinite(j.eta_minutes) ? j.eta_minutes : 30, why, needsOk: typeof j.needs_ok === 'boolean' ? j.needs_ok : routines.guessNeedsOk(text),
+    complexity, routerModel: cfg.modelPolicy[complexity] };
 }
 // the system prompt every agent run starts from: who it is, its brief, skills and lessons, its tools, the company, the notes for this task
 function agentSystem(a, index, read, { extra = '', words = 260 } = {}) {
@@ -232,9 +247,10 @@ function agentSystem(a, index, read, { extra = '', words = 260 } = {}) {
 }
 const modeLineFor = (mode, task) => mode === 'draft' ? '\nPrepare everything, but send, post, pay or change NOTHING outside this machine: the owner reads this first and approves it. End with one line saying exactly what will go out when approved (or that nothing needs to).'
   : mode === 'approve' ? `\nThe owner has APPROVED the draft below. Carry out the outbound step now, exactly as drafted, with your tools (send, post, update). If a tool you need is not connected, say so and show what you would have sent. Then report in one short section: what went out, to whom, and anything that did not.\nApproved draft:\n${task.draft || task.result}` : '';
-const pickFor = (task, a) => { // model + effort: four places, one precedence (task > routine > agent > office)
-  const pick = modelFor({ task: task.model, routine: task.routineModel, agent: a.model, office: cfg.model });
-  const eff = effortFor({ task: task.effort, routine: task.routineEffort, agent: a.effort, office: cfg.effort, model: pick.model });
+const pickFor = (task, a, routerModel) => { // model + effort: task > routine > router (complexity-based) > agent > office
+  const router = routerModel ?? task.routerModel;
+  const pick = modelFor({ task: task.model, routine: task.routineModel, router, agent: a.model, office: cfg.model });
+  const eff = effortFor({ task: task.effort, routine: task.routineEffort, router, agent: a.effort, office: cfg.effort, model: pick.model });
   return { pick, eff };
 };
 // persist a task mid-run (a team's pieces move while the run is still going; the page polls /api/tasks)
@@ -274,7 +290,7 @@ async function runTeam(task, mode) {
   // 1. the plan — the lead splits the request across the desks (Sonnet, no tools: a JSON job)
   const pp = teams.planPrompt({ business: cfg.name, deptName: DEPTS[dept].name, lead, seats, text: task.text, title: task.title, max, notes: contextText(index, relevantNotes(index, dept, task.title + ' ' + task.text, 3)).slice(0, 4000) });
   let plan;
-  try { plan = teams.parsePlan(await ask(pp.system, pp.user, { maxTokens: 1400, timeout: 150000, model: 'sonnet' }), { seats, lead, max, fallback: task }); }
+  try { plan = teams.parsePlan(await ask(pp.system, pp.user, { maxTokens: 1400, timeout: 150000, model: 'sonnet' }), { seats, lead, max, fallback: task, modelPolicy: cfg.modelPolicy }); }
   catch (e) { plan = { pieces: [{ agent: lead.id, title: task.title, text: task.text }], why: '', solo: true, error: e.message }; }
   task.team = { ...(task.team || {}), lead: lead.id, max, pieces: plan.pieces.map(p => ({ ...p, state: 'next' })), messages: [], why: plan.why, solo: plan.solo, plannedAt: Date.now() };
   persist(task);
@@ -288,10 +304,10 @@ async function runTeam(task, mode) {
       const read = relevantNotes(index, dept, piece.title + ' ' + piece.text, 3);
       const system = agentSystem(a, index, read, { extra: teams.teamSection({ me: a, lead, pieces: task.team.pieces, nameOf }), words: 220 });
       const user = `Task (the whole request, for context): ${task.title}\nOwner's request: ${task.text}\n\nYOUR PIECE: ${piece.title}\n${piece.text}` + routineLineFor(task) + (mode === 'draft' ? modeLineFor('draft', task) : '');
-      const { pick, eff } = pickFor(task, a);
+      const { pick, eff } = pickFor(task, a, piece.routerModel);
       const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort });
       const { body, messages } = teams.parseMessages(text, ids);
-      Object.assign(piece, { result: body || '(empty)', tools: toolKeys(tools), used: mcp.namesOf(tools), read, modelId: ran, error: !text });
+      Object.assign(piece, { result: body || '(empty)', tools: toolKeys(tools), used: mcp.namesOf(tools), read, modelId: ran, error: !text, modelUsed: pick.model, modelFrom: pick.from });
       for (const m of messages) task.team.messages.push({ from: a.id, to: m.to === lead.id ? 'lead' : m.to, text: m.text, at: Date.now() });
     } catch (e) { Object.assign(piece, { result: 'Could not complete this piece: ' + e.message, error: true }); }
     piece.state = 'done'; piece.doneAt = Date.now(); persist(task);
@@ -462,6 +478,13 @@ const server = http.createServer(async (req, res) => {
       const page = fs.readFileSync(HTML, 'utf8');
       return res.end(url.pathname === '/dark' ? page.replace('<body>', '<body class="dark">') : page); // /dark: the same file, opened in dark mode
     }
+    // The visual Command Centre catalogue is a local module. Availability remains exposed
+    // through /api/mcp and the Connector details panel.
+    if (url.pathname === '/assets/mcp-catalog.js' || url.pathname === '/assets/profile.js') {
+      const source = url.pathname === '/assets/mcp-catalog.js' ? 'mcplogos.js' : 'profile.js';
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(fs.readFileSync(path.join(ROOT, 'src', source), 'utf8'));
+    }
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, version, backend, model: cfg.model, modelName: modelName(cfg.model), models: MODEL_KEYS, effort: cfg.effort || '', efforts: EFFORT_KEYS, name: cfg.name, brain: BRAIN, notes: graph.notes, depts: DEPT_KEYS,
       agents: agentsOut(), setup: setupMap(), routines: (l => ({ count: l.length, paused: l.filter(r => r.paused).length, depts: routines.ALLOWED }))(loadRoutines()), roster: { customised: roster.customised, briefed: roster.briefed, files: roster.files, problems: roster.problems }, skills: (({ count, shipped, brain, problems }) => ({ count, shipped, brain, problems }))(skills.summary()), tools: backend === 'claude-cli', mcp: mcp.summary(), teams: TEAMS, browser: mcp.summary().browser });
     if (url.pathname === '/api/agents') return json(res, 200, { agents: agentsOut(), problems: roster.problems, files: roster.files });
@@ -470,6 +493,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/mcp') { if (url.searchParams.get('refresh') === '1') await mcp.discover(); else await discovering; return json(res, 200, { ...mcp.summary(), tools: backend === 'claude-cli' }); }
     if (url.pathname === '/api/brain') return json(res, 200, graph);
     if (url.pathname === '/api/usage') return json(res, 200, await getUsage(url.searchParams.get('refresh') === '1')); // V3.6: the plan's gauge (never a 500: unavailable is an answer)
+    if (url.pathname === '/api/reset-status') return json(res, 200, await fetchResetStatus()); // RESET INTEGRATION: read-only, real Reset data — never a 500, unavailable is an honest answer
+    if (url.pathname === '/api/connectors') return json(res, 200, await fetchConnectors()); // RESET INTEGRATION: connector health panel — real integration_control status, never a 500
+    if (url.pathname === '/api/ceo') { // RESET AI CEO: read-only, written by ceo/cycle.mjs — never a 500, missing state is an honest answer
+      try { return json(res, 200, { available: true, state: JSON.parse(fs.readFileSync(path.join(DATA, 'ceo', 'ceo-state.json'), 'utf8')) }); }
+      catch { return json(res, 200, { available: false, state: null }); }
+    }
     if (url.pathname === '/api/tasks' && req.method === 'GET') return json(res, 200, load());
     if (url.pathname === '/api/routines' && req.method === 'GET') return json(res, 200, routinesOut());
     if (url.pathname === '/api/routines' && req.method === 'POST') {
@@ -505,6 +534,7 @@ const server = http.createServer(async (req, res) => {
       const r = await route(dept, String(text).trim());
       const asTeam = TEAMS.enabled && (team === true || teams.intent(text)); // V3.2 (16 Sep): TEAM in the bar, or "as a team" in the sentence → the lead owns it and splits it
       const task = { id: nid(), dept, agent: asTeam ? leadOf(dept).id : r.agent, title: r.title, text: String(text).trim(), plan: r.plan, eta: r.eta, why: asTeam ? `team — ${leadOf(dept).name} splits it across the desks` : r.why, state: 'next', addedAt: Date.now(), by: 'you', model: normModel(model) || undefined, effort: normEffort(effort) || undefined, // model/effort: set on this task (beats routine, agent, office)
+        routerComplexity: r.complexity, routerModel: r.routerModel, // V3.7: the router's own complexity-based pick — task/routine model above still wins if the owner set one
         team: asTeam ? { lead: leadOf(dept).id, asked: team === true ? 'you' : 'text' } : undefined };
       if (dueAt) { task.state = 'scheduled'; task.dueAt = dueAt; task.needsOk = r.needsOk; } // waits for its minute; needsOk decides whether it then waits for the OK
       const list = load(); list.push(task); save(list);
